@@ -5,34 +5,36 @@ st.title("CKD Smart Nutrition Risk App")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 
-st.write("Page loaded.")
-
-if "clicked" not in st.session_state:
-    st.session_state.clicked = False
-
 if st.button("Test USDA API"):
-    st.session_state.clicked = True
 
-if st.session_state.clicked:
-    st.write("Inside button block")
+    st.write("Button clicked. Making request...")
 
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
-    response = requests.get(
-        url,
-        params={
-            "query": "banana",
-            "api_key": USDA_API_KEY,
-            "pageSize": 3
-        }
-    )
+    try:
+        response = requests.get(
+            url,
+            params={
+                "query": "banana",
+                "api_key": USDA_API_KEY,
+                "pageSize": 3
+            },
+            timeout=10
+        )
 
-    st.write("Status Code:", response.status_code)
+        st.write("Request completed.")
+        st.write("Status Code:", response.status_code)
 
-    if response.status_code == 200:
-        data = response.json()
-        foods = data.get("foods", [])
-        for food in foods:
-            st.write(food["description"])
-    else:
-        st.write(response.text)
+        if response.status_code == 200:
+            data = response.json()
+            foods = data.get("foods", [])
+            st.write("Foods returned:", len(foods))
+
+            for food in foods:
+                st.write(food["description"])
+        else:
+            st.write("Response text:", response.text)
+
+    except Exception as e:
+        st.error("Request failed.")
+        st.write(str(e))
