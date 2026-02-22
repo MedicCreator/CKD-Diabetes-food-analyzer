@@ -4,7 +4,7 @@ import os
 
 st.set_page_config(page_title="CKD Smart Nutrition", layout="wide")
 
-USDA_API_KEY = os.getenv("USDA_API_KEY")
+USDA_API_KEY = st.secrets["USDA_API_KEY"]
 
 st.title("CKD Smart Nutrition Risk App")
 st.caption("Educational tool. Not medical advice.")
