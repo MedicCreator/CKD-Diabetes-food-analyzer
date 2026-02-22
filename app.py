@@ -1,7 +1,9 @@
 import streamlit as st
 
-st.title("VERSION CHECK")
+st.title("CKD Smart Nutrition Risk App")
 
-st.button("TEST BUTTON")
-
-st.write("If you see this button, the new code is running.")
+try:
+    USDA_API_KEY = st.secrets["USDA_API_KEY"]
+    st.success("API key loaded successfully.")
+except:
+    st.error("API key NOT found.")
