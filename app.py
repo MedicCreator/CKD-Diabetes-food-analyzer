@@ -14,13 +14,13 @@ IMPORTANT_NUTRIENTS = {
     1091: "Phosphorus (mg)"
 }
 
+if "foods" not in st.session_state:
+    st.session_state.foods = None
+
 food_name = st.text_input("Enter food name")
 
 if st.button("Search"):
-
-    if food_name.strip() == "":
-        st.warning("Please enter a food name.")
-    else:
+    if food_name.strip() != "":
         response = requests.get(
             "https://api.nal.usda.gov/fdc/v1/foods/search",
             params={
@@ -33,42 +33,47 @@ if st.button("Search"):
 
         if response.status_code == 200:
             data = response.json()
-            foods = data.get("foods", [])
-
-            if foods:
-                food_options = {food["description"]: food["fdcId"] for food in foods}
-                selected_food = st.selectbox("Select a food", list(food_options.keys()))
-
-                if st.button("Get Nutrients"):
-
-                    fdc_id = food_options[selected_food]
-
-                    detail_response = requests.get(
-                        f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}",
-                        params={"api_key": USDA_API_KEY},
-                        timeout=15
-                    )
-
-                    if detail_response.status_code == 200:
-                        food_data = detail_response.json()
-                        st.subheader("Nutrient Information")
-
-                        for nutrient in food_data.get("foodNutrients", []):
-                            nutrient_id = nutrient.get("nutrient", {}).get("id") or nutrient.get("nutrientId")
-                            value = nutrient.get("amount") or nutrient.get("value")
-
-                            if nutrient_id in IMPORTANT_NUTRIENTS:
-                                st.write(
-                                    IMPORTANT_NUTRIENTS[nutrient_id],
-                                    ":",
-                                    value
-                                )
-                    else:
-                        st.error("Failed to fetch nutrient data.")
-            else:
-                st.warning("No foods found.")
+            st.session_state.foods = data.get("foods", [])
         else:
             st.error("API Error")
+
+# Show dropdown only if foods exist
+if st.session_state.foods:
+
+    food_options = {
+        food["description"]: food["fdcId"]
+        for food in st.session_state.foods
+    }
+
+    selected_food = st.selectbox(
+        "Select a food",
+        list(food_options.keys())
+    )
+
+    if st.button("Get Nutrients"):
+
+        fdc_id = food_options[selected_food]
+
+        detail_response = requests.get(
+            f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}",
+            params={"api_key": USDA_API_KEY},
+            timeout=15
+        )
+
+        if detail_response.status_code == 200:
+            food_data = detail_response.json()
+
+            st.subheader("Nutrient Information")
+
+            for nutrient in food_data.get("foodNutrients", []):
+                nutrient_id = nutrient.get("nutrient", {}).get("id") or nutrient.get("nutrientId")
+                value = nutrient.get("amount") or nutrient.get("value")
+
+                if nutrient_id in IMPORTANT_NUTRIENTS:
+                    st.write(IMPORTANT_NUTRIENTS[nutrient_id], ":", value)
+
+        else:
+            st.error("Failed to fetch nutrient data.")
 
 st.markdown("---")
 st.markdown(
