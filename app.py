@@ -1,12 +1,20 @@
 import streamlit as st
 import requests
 
-st.title("Network Test")
+st.title("USDA Key Validation Test")
 
-if st.button("Test Google"):
+USDA_API_KEY = st.secrets["USDA_API_KEY"]
 
-    try:
-        response = requests.get("https://www.google.com", timeout=5)
-        st.write("Google Status:", response.status_code)
-    except Exception as e:
-        st.write("Google failed:", str(e))
+if st.button("Test USDA Key"):
+
+    response = requests.get(
+        "https://api.nal.usda.gov/fdc/v1/foods/search",
+        params={
+            "query": "banana",
+            "api_key": USDA_API_KEY
+        },
+        timeout=15
+    )
+
+    st.write("Status Code:", response.status_code)
+    st.write("Response Text:", response.text)
