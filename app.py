@@ -5,7 +5,14 @@ st.title("CKD Smart Nutrition Risk App")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 
-if st.button("Test USDA API"):
+st.write("Page loaded.")
+
+clicked = st.button("Test USDA API")
+
+st.write("Button state:", clicked)
+
+if clicked:
+    st.write("Inside button block")
 
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
@@ -19,14 +26,3 @@ if st.button("Test USDA API"):
     )
 
     st.write("Status Code:", response.status_code)
-
-    if response.status_code == 200:
-        data = response.json()
-        st.write("API Working ✅")
-
-        foods = data.get("foods", [])
-        for food in foods:
-            st.write(food["description"])
-    else:
-        st.error("API Failed ❌")
-        st.write(response.text)
