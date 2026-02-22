@@ -1,18 +1,21 @@
 import streamlit as st
 import requests
-import os
 
-st.set_page_config(page_title="CKD Smart Nutrition", layout="wide")
-
-USDA_API_KEY = st.secrets["USDA_API_KEY"]
+st.set_page_config(page_title="CKD Smart Nutrition")
 
 st.title("CKD Smart Nutrition Risk App")
 st.caption("Educational tool. Not medical advice.")
 
+# Get API key from Streamlit secrets
+USDA_API_KEY = st.secrets["USDA_API_KEY"]
+
 query = st.text_input("Search Food")
 
-if query:
+if query != "":
+    st.write("Searching for:", query)
+
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
+
     params = {
         "query": query,
         "api_key": USDA_API_KEY,
@@ -20,11 +23,21 @@ if query:
     }
 
     response = requests.get(url, params=params)
-    foods = response.json().get("foods", [])
 
-    if foods:
+    st.write("Status Code:", response.status_code)
+
+    data = response.json()
+
+    st.write("Raw Response:", data)
+
+    foods = data.get("foods", [])
+
+    if len(foods) > 0:
+        st.subheader("Results:")
         for food in foods:
             st.write(food["description"])
+    else:
+        st.write("No foods found.")
 
 st.markdown("---")
 st.markdown(
