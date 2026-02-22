@@ -7,11 +7,13 @@ USDA_API_KEY = st.secrets["USDA_API_KEY"]
 
 st.write("Page loaded.")
 
-clicked = st.button("Test USDA API")
+if "clicked" not in st.session_state:
+    st.session_state.clicked = False
 
-st.write("Button state:", clicked)
+if st.button("Test USDA API"):
+    st.session_state.clicked = True
 
-if clicked:
+if st.session_state.clicked:
     st.write("Inside button block")
 
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
@@ -26,3 +28,11 @@ if clicked:
     )
 
     st.write("Status Code:", response.status_code)
+
+    if response.status_code == 200:
+        data = response.json()
+        foods = data.get("foods", [])
+        for food in foods:
+            st.write(food["description"])
+    else:
+        st.write(response.text)
