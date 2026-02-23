@@ -21,25 +21,18 @@ IMPORTANT_NUTRIENTS = {
 }
 
 # ---------------- DATABASE ----------------
-
 conn = sqlite3.connect("nutrition.db", check_same_thread=False)
 c = conn.cursor()
 
 c.execute("""
 CREATE TABLE IF NOT EXISTS daily_log (
     log_date TEXT,
-    calories REAL,
-    protein REAL,
-    potassium REAL,
-    phosphorus REAL,
-    sodium REAL,
-    carbs REAL,
     risk REAL
 )
 """)
 conn.commit()
 
-# ---------------- USDA ----------------
+# ---------------- USDA FUNCTIONS ----------------
 
 @st.cache_data(ttl=86400)
 def search_food(query):
@@ -87,10 +80,7 @@ def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
-# ---------------- CLINICAL ----------------
-
-def protein_target(weight, dialysis):
-    return 1.2 * weight if dialysis else 0.8 * weight
+# ---------------- CLINICAL ENGINE ----------------
 
 def auto_adjust_limits(stage, serum_k, serum_phos):
     limits = {"sodium": 2300, "potassium": 2500, "phosphorus": 1000}
@@ -104,18 +94,24 @@ def auto_adjust_limits(stage, serum_k, serum_phos):
         limits["phosphorus"] = 800
     return limits
 
-def risk_score(total, limits):
+def calculate_risk(total, limits):
     score = 0
+    triggers = []
+
     for n in ["potassium","phosphorus","sodium"]:
-        score += min((total[n] / limits[n]) * 100, 100)
-    return round(score / 3, 1)
+        percent = (total[n] / limits[n]) * 100 if limits[n] else 0
+        if percent > 100:
+            triggers.append(n)
+        score += min(percent,100)
+
+    return round(score/3,1), triggers
 
 def risk_label(score):
     if score <= 40:
-        return "🟢 Low Risk"
+        return "🟢 Low Risk", "Within recommended limits."
     elif score <= 70:
-        return "🟡 Moderate Risk"
-    return "🔴 High Risk"
+        return "🟡 Moderate Risk", "Approaching limits. Portion control advised."
+    return "🔴 High Risk", "Exceeds recommended limits."
 
 # ---------------- SIDEBAR ----------------
 
@@ -127,13 +123,10 @@ dialysis = st.sidebar.checkbox("On Dialysis")
 diabetic = st.sidebar.checkbox("Diabetic")
 
 st.sidebar.subheader("Lab Values")
-
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
 fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
-
-daily_protein_target = protein_target(weight, dialysis)
 
 # ---------------- STATE ----------------
 
@@ -210,38 +203,31 @@ if st.session_state.meal:
     for k,v in total.items():
         st.write(f"{k.capitalize()}: {round(v,1)}")
 
-    st.write(f"Daily Protein Target: {round(daily_protein_target,1)} g")
-
     limits = auto_adjust_limits(stage, serum_k, serum_phos)
-    score = risk_score(total, limits)
+    score, triggers = calculate_risk(total, limits)
+
+    label, desc = risk_label(score)
 
     st.subheader("CKD Risk Score")
     st.metric("Score", score)
-    st.write(risk_label(score))
+    st.write(label)
+    st.info(desc)
+
+    if triggers:
+        st.warning(f"High levels detected in: {', '.join(triggers)}")
 
     if diabetic and (total["carbs"] > 60 or hba1c > 7 or fasting_glucose > 130):
-        st.warning("Glycemic risk elevated. Consider reducing carbohydrate load.")
+        st.warning("Glycemic risk elevated based on carb load or lab values.")
 
     if st.button("Save Day"):
-        c.execute(
-            "INSERT INTO daily_log VALUES (?,?,?,?,?,?,?,?)",
-            (
-                str(date.today()),
-                total["calories"],
-                total["protein"],
-                total["potassium"],
-                total["phosphorus"],
-                total["sodium"],
-                total["carbs"],
-                score
-            )
-        )
+        c.execute("INSERT INTO daily_log VALUES (?,?)",
+                  (str(date.today()), score))
         conn.commit()
         st.success("Saved!")
 
 # ---------------- WEEKLY DASHBOARD ----------------
 
-st.header("Weekly Dashboard")
+st.header("Weekly Risk Trend")
 
 df = pd.read_sql_query(
     "SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",
@@ -251,8 +237,11 @@ df = pd.read_sql_query(
 if not df.empty:
     df["log_date"] = pd.to_datetime(df["log_date"])
     df = df.sort_values("log_date")
-    st.line_chart(df.set_index("log_date")[["risk"]])
-    st.line_chart(df.set_index("log_date")[["calories"]])
+    st.line_chart(df.set_index("log_date")["risk"])
 
 st.markdown("---")
-st.markdown("⚠️ Educational tool only. Not medical advice.")
+st.markdown("""
+⚠️ Educational tool only. Not medical advice.
+Nutritional data provided by USDA FoodData Central.
+Not affiliated with or endorsed by USDA.
+""")
