@@ -9,7 +9,7 @@ from datetime import date
 # CONFIG
 # ======================================================
 
-st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide")
+st.set_page_config(page_title="Renal + Diabetes Daily Planner", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
@@ -24,6 +24,8 @@ IMPORTANT_NUTRIENTS = {
     2000: "sugar"
 }
 
+MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snacks"]
+
 # ======================================================
 # DATABASE
 # ======================================================
@@ -34,6 +36,12 @@ c = conn.cursor()
 c.execute("""
 CREATE TABLE IF NOT EXISTS daily_log (
     log_date TEXT,
+    sodium REAL,
+    potassium REAL,
+    phosphorus REAL,
+    carbs REAL,
+    protein REAL,
+    calories REAL,
     ckd REAL,
     diabetes REAL,
     combined REAL
@@ -65,42 +73,36 @@ def get_food_details(fdc_id):
 
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
-
     for n in food_data.get("foodNutrients", []):
-        nutrient_id = None
+        nid = None
         value = None
 
-        # Foundation / SR format
         if "nutrient" in n:
-            nutrient_id = n["nutrient"].get("id")
+            nid = n["nutrient"].get("id")
             value = n.get("amount")
 
-        # Branded format
-        if not nutrient_id:
-            nutrient_id = n.get("nutrientId")
+        if not nid:
+            nid = n.get("nutrientId")
             value = n.get("value")
 
-        if nutrient_id in IMPORTANT_NUTRIENTS and value is not None:
-            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value
+        if nid in IMPORTANT_NUTRIENTS and value is not None:
+            nutrients[IMPORTANT_NUTRIENTS[nid]] = value
 
     return nutrients
 
 def extract_portions(food_data):
     portions = [{"description": "100 g", "gramWeight": 100}]
-
     if food_data.get("servingSize"):
         portions.append({
             "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
             "gramWeight": food_data["servingSize"]
         })
-
     for p in food_data.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "description": p["portionDescription"],
                 "gramWeight": p["gramWeight"]
             })
-
     return portions
 
 def scale_nutrients(nutrients, grams):
@@ -118,7 +120,6 @@ def adjusted_limits(stage, serum_k, serum_phos):
         "phosphorus": 1000
     }
 
-    # Lab tightening
     if serum_k >= 6:
         limits["potassium"] = 1500
     elif serum_k >= 5.5:
@@ -132,16 +133,15 @@ def adjusted_limits(stage, serum_k, serum_phos):
     return limits
 
 def ckd_risk(total, limits, stage):
-    triggers = []
     max_percent = 0
+    triggers = []
 
-    for n in ["sodium", "potassium", "phosphorus"]:
+    for n in ["sodium","potassium","phosphorus"]:
         percent = (total[n] / limits[n]) * 100
         max_percent = max(max_percent, percent)
         if percent > 100:
             triggers.append(n)
 
-    # Stage severity boost
     if stage >= 4:
         max_percent *= 1.2
 
@@ -151,13 +151,13 @@ def diabetes_risk(total, hba1c, fasting_glucose):
     score = 0
     triggers = []
 
-    if total["carbs"] > 60:
+    if total["carbs"] > 180:
         score += 40
-        triggers.append("carbohydrates")
+        triggers.append("high daily carbs")
 
-    if total["sugar"] > 25:
+    if total["sugar"] > 50:
         score += 30
-        triggers.append("sugar")
+        triggers.append("high sugar")
 
     if hba1c >= 7:
         score += 20
@@ -171,10 +171,10 @@ def diabetes_risk(total, hba1c, fasting_glucose):
 
 def risk_label(score):
     if score <= 40:
-        return "🟢 Low Risk — Within recommended limits."
+        return "🟢 Low Risk"
     elif score <= 70:
-        return "🟡 Moderate Risk — Approaching or partially exceeding limits."
-    return "🔴 High Risk — Exceeds recommended limits."
+        return "🟡 Moderate Risk"
+    return "🔴 High Risk"
 
 # ======================================================
 # SIDEBAR
@@ -189,17 +189,19 @@ hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
 fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
 
 # ======================================================
-# STATE
+# STATE INIT
 # ======================================================
 
-if "meal" not in st.session_state:
-    st.session_state.meal = []
+if "meals" not in st.session_state:
+    st.session_state.meals = {meal: [] for meal in MEAL_TYPES}
 
 # ======================================================
 # UI
 # ======================================================
 
-st.title("Renal + Diabetes Clinical Planner")
+st.title("Renal + Diabetes Daily Planner")
+
+meal_choice = st.selectbox("Select Meal Section", MEAL_TYPES)
 
 query = st.text_input("Search Food")
 
@@ -207,7 +209,6 @@ if st.button("Search"):
     st.session_state.results = search_food(query)
 
 if "results" in st.session_state and st.session_state.results:
-
     selected = st.selectbox(
         "Select Food",
         st.session_state.results,
@@ -219,7 +220,7 @@ if "results" in st.session_state and st.session_state.results:
     portions = extract_portions(food_data)
 
     portion_choice = st.selectbox(
-        "Select Portion Type",
+        "Select Portion",
         portions,
         format_func=lambda x: x["description"]
     )
@@ -232,114 +233,100 @@ if "results" in st.session_state and st.session_state.results:
         scaled["id"] = str(uuid.uuid4())
         scaled["name"] = selected["description"]
         scaled["portion"] = portion_choice["description"]
-        st.session_state.meal.append(scaled)
+        st.session_state.meals[meal_choice].append(scaled)
 
 # ======================================================
-# DISPLAY
+# DISPLAY ALL MEALS
 # ======================================================
 
-if st.session_state.meal:
+daily_total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
 
-    remove_ids = []
-
-    for item in st.session_state.meal:
-        col1, col2 = st.columns([4,1])
-        with col1:
-            st.write(f"• {item['name']} ({item['portion']})")
-        with col2:
-            if st.button("Remove", key=item["id"]):
-                remove_ids.append(item["id"])
-
-    if remove_ids:
-        st.session_state.meal = [
-            i for i in st.session_state.meal if i["id"] not in remove_ids
-        ]
-        st.rerun()
-
-    total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
-    for item in st.session_state.meal:
-        for k in total:
-            total[k] += item.get(k,0)
-
-    st.subheader("Nutrient Totals")
-    for k,v in total.items():
-        st.write(f"{k.capitalize()}: {round(v,1)}")
-
-    limits = adjusted_limits(stage, serum_k, serum_phos)
-
-    ckd_score, ckd_triggers = ckd_risk(total, limits, stage)
-    dm_score, dm_triggers = diabetes_risk(total, hba1c, fasting_glucose)
-    combined = round((ckd_score*0.6)+(dm_score*0.4),1)
-
-    # ---------------- CKD ----------------
-    st.subheader("CKD Risk")
-    st.metric("Score", ckd_score)
-    st.write(risk_label(ckd_score))
-
-    for n in ["sodium","potassium","phosphorus"]:
-        percent = (total[n] / limits[n]) * 100
-        st.write(
-            f"{n.capitalize()}: {round(total[n],1)} mg "
-            f"(Limit: {limits[n]} mg | {round(percent,1)}%)"
-        )
-
-    if ckd_triggers:
-        st.error(f"High due to: {', '.join(ckd_triggers)}")
-
-    # ---------------- DIABETES ----------------
-    st.subheader("Diabetes Risk")
-    st.metric("Score", dm_score)
-    st.write(risk_label(dm_score))
-
-    if dm_triggers:
-        st.error(f"Triggered by: {', '.join(dm_triggers)}")
-
-    # ---------------- COMBINED ----------------
-    st.subheader("Combined Risk")
-    st.metric("Score", combined)
-    st.write(risk_label(combined))
-
-    if st.button("Save Day"):
-        c.execute(
-            "INSERT INTO daily_log VALUES (?,?,?,?)",
-            (str(date.today()), ckd_score, dm_score, combined)
-        )
-        conn.commit()
-        st.success("Saved!")
+for meal in MEAL_TYPES:
+    st.subheader(meal)
+    for item in st.session_state.meals[meal]:
+        st.write(f"• {item['name']} ({item['portion']})")
+        for k in daily_total:
+            daily_total[k] += item.get(k,0)
 
 # ======================================================
-# WEEKLY TREND
+# DAILY TOTAL SECTION
 # ======================================================
 
-st.header("Weekly Risk Trend")
+st.header("Daily Total")
+
+for k,v in daily_total.items():
+    st.write(f"{k.capitalize()}: {round(v,1)}")
+
+limits = adjusted_limits(stage, serum_k, serum_phos)
+
+ckd_score, ckd_triggers = ckd_risk(daily_total, limits, stage)
+dm_score, dm_triggers = diabetes_risk(daily_total, hba1c, fasting_glucose)
+combined = round((ckd_score*0.6)+(dm_score*0.4),1)
+
+st.subheader("CKD Risk")
+st.metric("Score", ckd_score)
+st.write(risk_label(ckd_score))
+if ckd_triggers:
+    st.error(f"Triggered by: {', '.join(ckd_triggers)}")
+
+st.subheader("Diabetes Risk")
+st.metric("Score", dm_score)
+st.write(risk_label(dm_score))
+if dm_triggers:
+    st.error(f"Triggered by: {', '.join(dm_triggers)}")
+
+st.subheader("Combined Risk")
+st.metric("Score", combined)
+st.write(risk_label(combined))
+
+if st.button("Save Full Day"):
+    c.execute("""
+        INSERT INTO daily_log VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (
+        str(date.today()),
+        daily_total["sodium"],
+        daily_total["potassium"],
+        daily_total["phosphorus"],
+        daily_total["carbs"],
+        daily_total["protein"],
+        daily_total["calories"],
+        ckd_score,
+        dm_score,
+        combined
+    ))
+    conn.commit()
+    st.success("Daily summary saved.")
+
+# ======================================================
+# WEEKLY DASHBOARD
+# ======================================================
+
+st.header("Weekly Trend")
 
 df = pd.read_sql_query(
-    "SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",
+    "SELECT log_date, ckd, diabetes, combined FROM daily_log ORDER BY log_date DESC LIMIT 7",
     conn
 )
 
 if not df.empty:
     df["log_date"] = pd.to_datetime(df["log_date"])
     df = df.sort_values("log_date")
-    st.line_chart(df.set_index("log_date")[["ckd","diabetes","combined"]])
+    st.line_chart(df.set_index("log_date"))
 
 # ======================================================
 # DISCLAIMER
 # ======================================================
 
 st.markdown("---")
-
 st.markdown("""
 ### ⚠️ Medical & Data Disclaimer
 
-This application is for educational and informational purposes only.  
+This application is for educational purposes only.  
 It does not provide medical advice, diagnosis, or treatment.
 
-Risk scores are generalized estimates based on public dietary guidelines and 
-user-entered laboratory values. They are not individualized prescriptions.
+Risk scores are generalized estimates based on public dietary guidance and user-entered laboratory values.
 
-Always consult your physician, nephrologist, endocrinologist, or registered 
-dietitian before making dietary or medical decisions.
+Always consult your physician or registered dietitian before making dietary decisions.
 
 Nutritional data provided by USDA FoodData Central (https://fdc.nal.usda.gov/).  
 This application is not affiliated with or endorsed by the USDA.
