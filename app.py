@@ -1,13 +1,15 @@
 import streamlit as st
 import requests
-from datetime import date
 import pandas as pd
+import sqlite3
+import uuid
+from datetime import datetime, date
 
 # =====================================
 # CONFIG
 # =====================================
 
-st.set_page_config(page_title="CKD + Diabetes Smart Analyzer", layout="wide")
+st.set_page_config(page_title="Renal + Diabetes Smart Planner (Beta)", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
@@ -17,12 +19,32 @@ IMPORTANT_NUTRIENTS = {
     1092: "potassium",
     1091: "phosphorus",
     1005: "carbs",
-    1079: "fiber",
-    2000: "sugar"
+    1003: "protein",
+    1008: "calories"
 }
 
 # =====================================
-# USDA API (CACHED)
+# DATABASE SETUP
+# =====================================
+
+conn = sqlite3.connect("nutrition.db", check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS daily_log (
+    log_date TEXT,
+    calories REAL,
+    protein REAL,
+    potassium REAL,
+    phosphorus REAL,
+    sodium REAL,
+    risk_score REAL
+)
+""")
+conn.commit()
+
+# =====================================
+# USDA FUNCTIONS
 # =====================================
 
 @st.cache_data(ttl=86400)
@@ -52,211 +74,161 @@ def extract_nutrients(food_data):
             nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value if value else 0
     return nutrients
 
-def extract_portions(food_data):
-    portions = []
-
-    portions.append({
-        "description": "100 g",
-        "gramWeight": 100
-    })
-
-    if food_data.get("servingSize"):
-        portions.append({
-            "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
-            "gramWeight": food_data["servingSize"]
-        })
-
-    for p in food_data.get("foodPortions", []):
-        if p.get("gramWeight") and p.get("portionDescription"):
-            portions.append({
-                "description": p["portionDescription"],
-                "gramWeight": p["gramWeight"]
-            })
-
-    return portions
-
 def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
 # =====================================
-# CKD + DIABETES LOGIC
+# CLINICAL LOGIC
 # =====================================
 
-def get_ckd_limits(stage):
-    limits = {"sodium": 2300, "potassium": None, "phosphorus": 1000}
-    if stage >= 3:
-        limits["potassium"] = 2500
-    if stage >= 4:
-        limits["sodium"] = 2000
-    if stage == 5:
-        limits["potassium"] = 2000
-    return limits
+def protein_target(weight, dialysis):
+    if dialysis:
+        return 1.2 * weight
+    return 0.8 * weight
 
-def per_meal_limits(limits, meals=3):
-    return {k: v/meals for k,v in limits.items() if v}
-
-def nutrient_percent(value, limit):
-    return min((value/limit)*100,150)
-
-def ckd_score(values, limits):
-    weights={"potassium":0.4,"phosphorus":0.3,"sodium":0.3}
-    score=0
-    triggers=[]
-    for n in weights:
-        if n in limits:
-            percent=nutrient_percent(values[n],limits[n])
-            score+=percent*weights[n]
-            if percent>100:
-                triggers.append(n)
-    return round(min(score,100),1), triggers
-
-def diabetes_score(carbs,sugar,fiber):
-    carb_score=(carbs/60)*100
-    sugar_score=(sugar/25)*100
-    fiber_bonus=(fiber/10)*20
-    score=carb_score*0.5+sugar_score*0.3-fiber_bonus
-
-    triggers=[]
-    if carb_score>100:
-        triggers.append("carbohydrates")
-    if sugar_score>100:
-        triggers.append("sugar")
-
-    return round(max(min(score,100),0),1), triggers
-
-def combined_score(ckd,dm):
-    return round((ckd*0.6)+(dm*0.4),1)
+def ckd_risk(total):
+    score = 0
+    score += min((total["potassium"] / 2500) * 100, 100)
+    score += min((total["phosphorus"] / 1000) * 100, 100)
+    score += min((total["sodium"] / 2300) * 100, 100)
+    return round(score / 3, 1)
 
 def risk_label(score):
-    if score<=40:
-        return "🟢 Low Risk","Within recommended limits for most CKD and diabetes guidelines."
-    elif score<=70:
-        return "🟡 Moderate Risk","Approaching recommended limits. Portion control advised."
-    return "🔴 High Risk","Exceeds recommended limits. Consider smaller portions or alternatives."
+    if score <= 40:
+        return "🟢 Low"
+    elif score <= 70:
+        return "🟡 Moderate"
+    return "🔴 High"
 
 # =====================================
 # UI
 # =====================================
 
-st.title("CKD + Diabetes Smart Food Analyzer")
+st.title("Renal + Diabetes Smart Meal Planner (Beta)")
 
-stage=st.sidebar.selectbox("CKD Stage",[1,2,3,4,5])
+st.sidebar.header("Patient Profile")
+weight = st.sidebar.number_input("Body Weight (kg)", value=70.0)
+dialysis = st.sidebar.checkbox("On Dialysis")
+
+protein_daily_target = protein_target(weight, dialysis)
 
 if "meal" not in st.session_state:
-    st.session_state.meal=[]
-
-if "history" not in st.session_state:
-    st.session_state.history=[]
-
-st.header("Meal Builder")
-
-food_query=st.text_input("Search Food")
-
-if st.button("Search"):
-    st.session_state.results=search_food(food_query)
-
-if "results" in st.session_state and st.session_state.results:
-
-    selected=st.selectbox(
-        "Select Food",
-        st.session_state.results,
-        format_func=lambda x:x["description"]
-    )
-
-    food_data=get_food_details(selected["fdcId"])
-    nutrients=extract_nutrients(food_data)
-    portions=extract_portions(food_data)
-
-    portion_choice=st.selectbox(
-        "Select Portion Type",
-        portions,
-        format_func=lambda x:x["description"]
-    )
-
-    quantity=st.number_input("How many portions?",min_value=0.1,value=1.0,step=0.1)
-
-    if st.button("Add Food"):
-        grams=portion_choice["gramWeight"]*quantity
-        scaled=scale_nutrients(nutrients,grams)
-        scaled["name"]=selected["description"]
-        scaled["portion"]=portion_choice["description"]
-        scaled["grams"]=round(grams,1)
-        st.session_state.meal.append(scaled)
-        st.success("Food Added")
+    st.session_state.meal = []
 
 # =====================================
-# MEAL DISPLAY
+# MEAL BUILDER
+# =====================================
+
+st.header("Build Meal")
+
+query = st.text_input("Search Food")
+
+if st.button("Search"):
+    st.session_state.results = search_food(query)
+
+if "results" in st.session_state and st.session_state.results:
+    selected = st.selectbox(
+        "Select Food",
+        st.session_state.results,
+        format_func=lambda x: x["description"]
+    )
+
+    grams = st.number_input("Quantity (grams)", value=100.0)
+
+    if st.button("Add Food"):
+        food_data = get_food_details(selected["fdcId"])
+        nutrients = extract_nutrients(food_data)
+        scaled = scale_nutrients(nutrients, grams)
+
+        scaled["id"] = str(uuid.uuid4())
+        scaled["name"] = selected["description"]
+        st.session_state.meal.append(scaled)
+
+# =====================================
+# MEAL SUMMARY
 # =====================================
 
 if st.session_state.meal:
 
     st.subheader("Current Meal")
-    for i,item in enumerate(st.session_state.meal):
-        col1,col2=st.columns([4,1])
-        with col1:
-            st.write(f"• {item['name']} ({item['portion']} | {item['grams']} g)")
-        with col2:
-            if st.button("Remove",key=i):
-                st.session_state.meal.pop(i)
-                st.rerun()
 
-    total={k:0 for k in IMPORTANT_NUTRIENTS.values()}
+    remove_ids = []
+
+    for item in st.session_state.meal:
+        col1, col2 = st.columns([4,1])
+        with col1:
+            st.write(f"• {item['name']}")
+        with col2:
+            if st.button("Remove", key=item["id"]):
+                remove_ids.append(item["id"])
+
+    if remove_ids:
+        st.session_state.meal = [
+            i for i in st.session_state.meal if i["id"] not in remove_ids
+        ]
+        st.rerun()
+
+    total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
     for item in st.session_state.meal:
         for k in total:
-            total[k]+=item.get(k,0)
+            total[k] += item.get(k,0)
 
-    st.subheader("Meal Totals")
-    st.write(f"Carbohydrates: {round(total['carbs'],1)} g")
+    st.subheader("Nutrient Totals")
 
-    limits=get_ckd_limits(stage)
-    meal_limits=per_meal_limits(limits)
+    st.write(f"Calories: {round(total['calories'],1)} kcal")
+    st.write(f"Protein: {round(total['protein'],1)} g")
+    st.write(f"Potassium: {round(total['potassium'],1)} mg")
+    st.write(f"Phosphorus: {round(total['phosphorus'],1)} mg")
+    st.write(f"Sodium: {round(total['sodium'],1)} mg")
 
-    for nutrient,value in total.items():
-        if nutrient in meal_limits:
-            st.write(f"{nutrient.capitalize()}: {round(value,1)} mg")
-            st.progress(min(value/meal_limits[nutrient],1.0))
+    # Protein comparison
+    st.write(f"Daily Protein Target: {round(protein_daily_target,1)} g")
+    if total["protein"] < protein_daily_target / 3:
+        st.warning("Protein intake may be low for this meal.")
+    elif total["protein"] > protein_daily_target / 2:
+        st.warning("High protein load for single meal.")
 
-    ckd,ckd_triggers=ckd_score(total,meal_limits)
-    dm,dm_triggers=diabetes_score(total["carbs"],total["sugar"],total["fiber"])
-    combined=combined_score(ckd,dm)
+    # Risk
+    risk = ckd_risk(total)
+    st.subheader("CKD Risk Score")
+    st.metric("Score", risk)
+    st.write(risk_label(risk))
 
-    st.subheader("Risk Scores")
-
-    label,desc=risk_label(ckd)
-    st.metric("CKD Risk",ckd)
-    st.write(label)
-    st.info(desc)
-    if ckd_triggers:
-        st.warning(f"Triggered by high: {', '.join(ckd_triggers)}")
-
-    label2,desc2=risk_label(dm)
-    st.metric("Diabetes Risk",dm)
-    st.write(label2)
-    st.info(desc2)
-    if dm_triggers:
-        st.warning(f"Triggered by high: {', '.join(dm_triggers)}")
-
-    label3,desc3=risk_label(combined)
-    st.metric("Combined Risk",combined)
-    st.write(label3)
-    st.info(desc3)
-
-    if st.button("Save Today's Meal"):
-        st.session_state.history.append({
-            "date":str(date.today()),
-            "combined":combined
-        })
-        st.success("Saved!")
+    # Save to DB
+    if st.button("Save Day Summary"):
+        c.execute(
+            "INSERT INTO daily_log VALUES (?,?,?,?,?,?,?)",
+            (
+                str(date.today()),
+                total["calories"],
+                total["protein"],
+                total["potassium"],
+                total["phosphorus"],
+                total["sodium"],
+                risk
+            )
+        )
+        conn.commit()
+        st.success("Saved to database!")
 
 # =====================================
-# DAILY TRACKING
+# WEEKLY DASHBOARD
 # =====================================
 
-if st.session_state.history:
-    st.header("Daily Risk Trend")
-    df=pd.DataFrame(st.session_state.history)
-    st.line_chart(df.set_index("date"))
+st.header("Weekly Dashboard")
+
+df = pd.read_sql_query(
+    "SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",
+    conn
+)
+
+if not df.empty:
+    df["log_date"] = pd.to_datetime(df["log_date"])
+    df = df.sort_values("log_date")
+
+    st.line_chart(df.set_index("log_date")[["risk_score"]])
+    st.line_chart(df.set_index("log_date")[["calories"]])
 
 # =====================================
 # DISCLAIMER
@@ -264,16 +236,12 @@ if st.session_state.history:
 
 st.markdown("---")
 st.markdown("""
-⚠️ **Medical Disclaimer**
+⚠️ **Beta Disclaimer**
 
-This tool is for educational purposes only.
-It does not provide medical advice.
+This beta tool is for educational purposes only.
+It does not replace medical advice.
 Always consult your healthcare provider.
-""")
 
-st.markdown("""
-Data Source: Nutritional data provided by USDA FoodData Central  
-(https://fdc.nal.usda.gov/)
-
+Nutritional data provided by USDA FoodData Central.
 Not affiliated with or endorsed by the USDA.
 """)
