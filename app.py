@@ -2,9 +2,9 @@ import streamlit as st
 import requests
 import uuid
 
-# ==============================
+# ======================================================
 # CONFIG
-# ==============================
+# ======================================================
 
 st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide")
 
@@ -23,9 +23,9 @@ IMPORTANT_NUTRIENTS = {
 
 MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snacks"]
 
-# ==============================
-# USDA API
-# ==============================
+# ======================================================
+# USDA API (SAFE)
+# ======================================================
 
 @st.cache_data(ttl=86400)
 def search_food(query):
@@ -55,9 +55,9 @@ def get_food_details(fdc_id):
     except:
         return {}
 
-# ==============================
-# Nutrient Extraction
-# ==============================
+# ======================================================
+# NUTRIENT EXTRACTION
+# ======================================================
 
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
@@ -117,9 +117,9 @@ def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
-# ==============================
-# Clinical Logic
-# ==============================
+# ======================================================
+# CLINICAL LIMITS
+# ======================================================
 
 def adjusted_limits(stage, serum_k, serum_phos):
     limits = {
@@ -163,40 +163,37 @@ def categorize(percent):
     else:
         return "Low", "🟢"
 
-# ==============================
-# Sidebar
-# ==============================
+# ======================================================
+# SIDEBAR
+# ======================================================
 
 st.sidebar.header("Patient Profile")
-
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
 fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
 
-# ==============================
-# Session State
-# ==============================
+# ======================================================
+# SESSION STATE
+# ======================================================
 
 if "meals" not in st.session_state:
     st.session_state.meals = {meal: [] for meal in MEAL_TYPES}
 
-# ==============================
-# UI
-# ==============================
+# ======================================================
+# MEAL BUILDER
+# ======================================================
 
 st.title("Renal + Diabetes Clinical Daily Planner")
 
 meal_choice = st.selectbox("Select Meal Section", MEAL_TYPES)
-
 query = st.text_input("Search Food")
 
 if st.button("Search"):
     st.session_state.results = search_food(query)
 
 if "results" in st.session_state and st.session_state.results:
-
     selected = st.selectbox(
         "Select Food",
         st.session_state.results,
@@ -223,18 +220,16 @@ if "results" in st.session_state and st.session_state.results:
         scaled["portion"] = portion_choice["description"]
         st.session_state.meals[meal_choice].append(scaled)
 
-# ==============================
-# Display Meals
-# ==============================
-
-daily_total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
+# ======================================================
+# DISPLAY MEALS
+# ======================================================
 
 for meal in MEAL_TYPES:
     st.subheader(meal)
     for item in st.session_state.meals[meal]:
         col1, col2 = st.columns([4,1])
         with col1:
-            st.write(f"- {item['name']} ({item['portion']})")
+            st.write(f"{item['name']} ({item['portion']})")
         with col2:
             if st.button("Remove", key=item["id"]):
                 st.session_state.meals[meal] = [
@@ -243,17 +238,27 @@ for meal in MEAL_TYPES:
                 ]
                 st.rerun()
 
-        for k in daily_total:
-            daily_total[k] += item.get(k,0)
+# ======================================================
+# CLEAN DAILY AGGREGATION
+# ======================================================
 
-# ==============================
-# Daily Totals
-# ==============================
+def calculate_daily_totals(meals_dict):
+    totals = {k: 0 for k in IMPORTANT_NUTRIENTS.values()}
+    for meal_items in meals_dict.values():
+        for item in meal_items:
+            for nutrient in totals:
+                totals[nutrient] += item.get(nutrient, 0)
+    return totals
+
+daily_total = calculate_daily_totals(st.session_state.meals)
+
+# ======================================================
+# DAILY TOTAL DISPLAY
+# ======================================================
 
 st.header("Daily Total")
 
 limits = adjusted_limits(stage, serum_k, serum_phos)
-
 nutrient_percents = {}
 
 for nutrient in ["sodium","potassium","phosphorus","carbs"]:
@@ -267,9 +272,9 @@ for nutrient in ["sodium","potassium","phosphorus","carbs"]:
         f"(Limit: {limit} | {percent}% | +{excess} over)"
     )
 
-# ==============================
-# CKD Risk (All Contributors)
-# ==============================
+# ======================================================
+# CKD RISK
+# ======================================================
 
 st.subheader("CKD Risk Analysis")
 
@@ -285,15 +290,13 @@ ckd_label, ckd_icon = risk_label(max_ckd)
 st.metric("CKD Risk Score", round(max_ckd,1))
 st.markdown(f"### {ckd_icon} {ckd_label} Risk")
 
-st.markdown("#### Contributors:")
-
 for nutrient, percent in sorted(ckd_components.items(), key=lambda x: x[1], reverse=True):
     category, icon = categorize(percent)
     st.write(f"{icon} {nutrient}: {percent}% ({category})")
 
-# ==============================
-# Diabetes Risk
-# ==============================
+# ======================================================
+# DIABETES RISK
+# ======================================================
 
 st.subheader("Diabetes Risk Analysis")
 
@@ -312,9 +315,9 @@ if hba1c >= 7:
 if fasting_glucose >= 130:
     st.warning("Elevated fasting glucose increases short-term glycemic risk.")
 
-# ==============================
-# Combined Risk
-# ==============================
+# ======================================================
+# COMBINED RISK
+# ======================================================
 
 combined_score = round((max_ckd * 0.6) + (dm_percent * 0.4), 1)
 combined_label, combined_icon = risk_label(combined_score)
@@ -323,9 +326,9 @@ st.subheader("Combined Risk")
 st.metric("Combined Score", combined_score)
 st.markdown(f"### {combined_icon} {combined_label} Risk")
 
-# ==============================
-# Disclaimer
-# ==============================
+# ======================================================
+# DISCLAIMER
+# ======================================================
 
 st.markdown("---")
 st.markdown("""
