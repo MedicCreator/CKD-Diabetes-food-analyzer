@@ -1,9 +1,6 @@
 import streamlit as st
 import requests
-import pandas as pd
-import sqlite3
 import uuid
-from datetime import date
 
 # ======================================================
 # CONFIG
@@ -25,23 +22,6 @@ IMPORTANT_NUTRIENTS = {
 }
 
 MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snacks"]
-
-# ======================================================
-# DATABASE
-# ======================================================
-
-conn = sqlite3.connect("nutrition.db", check_same_thread=False)
-c = conn.cursor()
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS daily_log (
-    log_date TEXT,
-    ckd REAL,
-    diabetes REAL,
-    combined REAL
-)
-""")
-conn.commit()
 
 # ======================================================
 # USDA API (Defensive)
@@ -138,7 +118,7 @@ def scale_nutrients(nutrients, grams):
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
 # ======================================================
-# CLINICAL LIMITS
+# CLINICAL LOGIC
 # ======================================================
 
 def adjusted_limits(stage, serum_k, serum_phos):
@@ -178,6 +158,7 @@ def risk_label(score):
 # ======================================================
 
 st.sidebar.header("Patient Profile")
+
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
@@ -233,7 +214,7 @@ if "results" in st.session_state and st.session_state.results:
         st.session_state.meals[meal_choice].append(scaled)
 
 # ======================================================
-# DISPLAY MEALS WITH REMOVE
+# DISPLAY MEALS
 # ======================================================
 
 daily_total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
@@ -256,17 +237,20 @@ for meal in MEAL_TYPES:
             daily_total[k] += item.get(k,0)
 
 # ======================================================
-# DAILY TOTAL DISPLAY
+# DAILY TOTAL
 # ======================================================
 
 st.header("Daily Total")
 
 limits = adjusted_limits(stage, serum_k, serum_phos)
 
+nutrient_percents = {}
+
 for nutrient in ["sodium","potassium","phosphorus","carbs"]:
     value = daily_total[nutrient]
     limit = limits[nutrient]
     percent, excess = percent_and_excess(value, limit)
+    nutrient_percents[nutrient] = percent
 
     st.write(
         f"{nutrient.capitalize()}: {round(value,1)} "
@@ -274,13 +258,13 @@ for nutrient in ["sodium","potassium","phosphorus","carbs"]:
     )
 
 # ======================================================
-# RISK SECTION
+# CKD RISK (MULTI DRIVER)
 # ======================================================
 
 ckd_percent = max(
-    percent_and_excess(daily_total["sodium"], limits["sodium"])[0],
-    percent_and_excess(daily_total["potassium"], limits["potassium"])[0],
-    percent_and_excess(daily_total["phosphorus"], limits["phosphorus"])[0]
+    nutrient_percents["sodium"],
+    nutrient_percents["potassium"],
+    nutrient_percents["phosphorus"]
 )
 
 ckd_label, ckd_color = risk_label(ckd_percent)
@@ -289,14 +273,20 @@ st.subheader("CKD Risk")
 st.metric("Score", round(ckd_percent,1))
 st.markdown(f"### {ckd_color} {ckd_label} Risk")
 
-driver = max(
-    ["sodium","potassium","phosphorus"],
-    key=lambda n: percent_and_excess(daily_total[n], limits[n])[0]
-)
+exceeded = [n for n in ["sodium","potassium","phosphorus"] if nutrient_percents[n] > 100]
+approaching = [n for n in ["sodium","potassium","phosphorus"] if 90 <= nutrient_percents[n] <= 100]
 
-st.warning(f"Primary driver: {driver}")
+if exceeded:
+    st.error(f"Exceeded limits: {', '.join(exceeded)}")
 
-dm_percent = percent_and_excess(daily_total["carbs"], limits["carbs"])[0]
+if approaching:
+    st.warning(f"Approaching limits: {', '.join(approaching)}")
+
+# ======================================================
+# DIABETES RISK
+# ======================================================
+
+dm_percent = nutrient_percents["carbs"]
 dm_label, dm_color = risk_label(dm_percent)
 
 st.subheader("Diabetes Risk")
@@ -305,6 +295,10 @@ st.markdown(f"### {dm_color} {dm_label} Risk")
 
 if hba1c >= 7:
     st.warning("Elevated HbA1c increases long-term glycemic risk.")
+
+# ======================================================
+# COMBINED
+# ======================================================
 
 combined = round((ckd_percent*0.6)+(dm_percent*0.4),1)
 combined_label, combined_color = risk_label(combined)
