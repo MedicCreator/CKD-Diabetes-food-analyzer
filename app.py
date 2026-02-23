@@ -5,7 +5,7 @@ import sqlite3
 import uuid
 from datetime import date
 
-st.set_page_config(page_title="Renal + Diabetes Smart Planner", layout="wide")
+st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
@@ -27,12 +27,14 @@ c = conn.cursor()
 c.execute("""
 CREATE TABLE IF NOT EXISTS daily_log (
     log_date TEXT,
-    risk REAL
+    ckd_risk REAL,
+    dm_risk REAL,
+    combined REAL
 )
 """)
 conn.commit()
 
-# ---------------- USDA FUNCTIONS ----------------
+# ---------------- USDA ----------------
 
 @st.cache_data(ttl=86400)
 def search_food(query):
@@ -82,47 +84,63 @@ def scale_nutrients(nutrients, grams):
 
 # ---------------- CLINICAL ENGINE ----------------
 
-def auto_adjust_limits(stage, serum_k, serum_phos):
-    limits = {"sodium": 2300, "potassium": 2500, "phosphorus": 1000}
-    if stage >= 4:
-        limits["sodium"] = 2000
-    if serum_k > 5.5:
+def adjusted_limits(stage, serum_k, serum_phos):
+    limits = {"sodium": 2000 if stage >= 4 else 2300,
+              "potassium": 2500,
+              "phosphorus": 1000}
+
+    if serum_k >= 6:
         limits["potassium"] = 1500
-    elif serum_k > 5.0:
-        limits["potassium"] = 2000
-    if serum_phos > 4.5:
+    elif serum_k >= 5.5:
+        limits["potassium"] = 1800
+
+    if serum_phos >= 6:
+        limits["phosphorus"] = 700
+    elif serum_phos >= 5:
         limits["phosphorus"] = 800
+
     return limits
 
-def calculate_risk(total, limits):
-    score = 0
+def ckd_risk(total, limits, stage):
     triggers = []
+    max_percent = 0
 
-    for n in ["potassium","phosphorus","sodium"]:
-        percent = (total[n] / limits[n]) * 100 if limits[n] else 0
+    for n in ["sodium","potassium","phosphorus"]:
+        percent = (total[n] / limits[n]) * 100
+        max_percent = max(max_percent, percent)
         if percent > 100:
             triggers.append(n)
-        score += min(percent,100)
 
-    return round(score/3,1), triggers
+    # Stage multiplier
+    if stage >= 4:
+        max_percent *= 1.2
+
+    return min(round(max_percent,1),100), triggers
+
+def diabetes_risk(total, hba1c, fasting_glucose):
+    score = 0
+    if total["carbs"] > 60:
+        score += 40
+    if total["sugar"] > 25:
+        score += 30
+    if hba1c >= 7:
+        score += 20
+    if fasting_glucose >= 130:
+        score += 20
+    return min(score,100)
 
 def risk_label(score):
     if score <= 40:
-        return "🟢 Low Risk", "Within recommended limits."
+        return "🟢 Low Risk"
     elif score <= 70:
-        return "🟡 Moderate Risk", "Approaching limits. Portion control advised."
-    return "🔴 High Risk", "Exceeds recommended limits."
+        return "🟡 Moderate Risk"
+    return "🔴 High Risk"
 
 # ---------------- SIDEBAR ----------------
 
 st.sidebar.header("Patient Profile")
 
-weight = st.sidebar.number_input("Body Weight (kg)", value=70.0)
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
-dialysis = st.sidebar.checkbox("On Dialysis")
-diabetic = st.sidebar.checkbox("Diabetic")
-
-st.sidebar.subheader("Lab Values")
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
@@ -135,9 +153,7 @@ if "meal" not in st.session_state:
 
 # ---------------- MEAL BUILDER ----------------
 
-st.title("Renal + Diabetes Smart Planner")
-
-st.header("Build Meal")
+st.title("Renal + Diabetes Clinical Planner")
 
 query = st.text_input("Search Food")
 
@@ -176,8 +192,6 @@ if "results" in st.session_state and st.session_state.results:
 
 if st.session_state.meal:
 
-    st.subheader("Current Meal")
-
     remove_ids = []
 
     for item in st.session_state.meal:
@@ -203,45 +217,31 @@ if st.session_state.meal:
     for k,v in total.items():
         st.write(f"{k.capitalize()}: {round(v,1)}")
 
-    limits = auto_adjust_limits(stage, serum_k, serum_phos)
-    score, triggers = calculate_risk(total, limits)
+    limits = adjusted_limits(stage, serum_k, serum_phos)
 
-    label, desc = risk_label(score)
+    ckd_score, triggers = ckd_risk(total, limits, stage)
+    dm_score = diabetes_risk(total, hba1c, fasting_glucose)
+    combined = round((ckd_score*0.6)+(dm_score*0.4),1)
 
-    st.subheader("CKD Risk Score")
-    st.metric("Score", score)
-    st.write(label)
-    st.info(desc)
-
+    st.subheader("CKD Risk")
+    st.metric("Score", ckd_score)
+    st.write(risk_label(ckd_score))
     if triggers:
         st.warning(f"High levels detected in: {', '.join(triggers)}")
 
-    if diabetic and (total["carbs"] > 60 or hba1c > 7 or fasting_glucose > 130):
-        st.warning("Glycemic risk elevated based on carb load or lab values.")
+    st.subheader("Diabetes Risk")
+    st.metric("Score", dm_score)
+    st.write(risk_label(dm_score))
+
+    st.subheader("Combined Risk")
+    st.metric("Score", combined)
+    st.write(risk_label(combined))
 
     if st.button("Save Day"):
-        c.execute("INSERT INTO daily_log VALUES (?,?)",
-                  (str(date.today()), score))
+        c.execute("INSERT INTO daily_log VALUES (?,?,?,?)",
+                  (str(date.today()), ckd_score, dm_score, combined))
         conn.commit()
         st.success("Saved!")
 
-# ---------------- WEEKLY DASHBOARD ----------------
-
-st.header("Weekly Risk Trend")
-
-df = pd.read_sql_query(
-    "SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",
-    conn
-)
-
-if not df.empty:
-    df["log_date"] = pd.to_datetime(df["log_date"])
-    df = df.sort_values("log_date")
-    st.line_chart(df.set_index("log_date")["risk"])
-
 st.markdown("---")
-st.markdown("""
-⚠️ Educational tool only. Not medical advice.
-Nutritional data provided by USDA FoodData Central.
-Not affiliated with or endorsed by USDA.
-""")
+st.markdown("⚠️ Educational tool only. Not medical advice.")
