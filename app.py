@@ -54,17 +54,42 @@ def get_food_details(fdc_id):
 
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
+
     for n in food_data.get("foodNutrients", []):
-        nid = None
-        val = None
+
+        nutrient_id = None
+        value = None
+
+        # Foundation / SR
         if "nutrient" in n:
-            nid = n["nutrient"].get("id")
-            val = n.get("amount")
-        if not nid:
-            nid = n.get("nutrientId")
-            val = n.get("value")
-        if nid in IMPORTANT_NUTRIENTS and val is not None:
-            nutrients[IMPORTANT_NUTRIENTS[nid]] = val
+            nutrient_id = n["nutrient"].get("id")
+            nutrient_number = n["nutrient"].get("number")
+            value = n.get("amount")
+
+            # Fallback using nutrient number (important fix)
+            if nutrient_number == "307":  # Sodium
+                nutrients["sodium"] = value or 0
+            elif nutrient_number == "306":  # Potassium
+                nutrients["potassium"] = value or 0
+            elif nutrient_number == "305":  # Phosphorus
+                nutrients["phosphorus"] = value or 0
+            elif nutrient_number == "205":  # Carbs
+                nutrients["carbs"] = value or 0
+            elif nutrient_number == "203":  # Protein
+                nutrients["protein"] = value or 0
+            elif nutrient_number == "208":  # Calories
+                nutrients["calories"] = value or 0
+            elif nutrient_number == "269":  # Sugar
+                nutrients["sugar"] = value or 0
+
+        # Branded
+        if not nutrient_id:
+            nutrient_id = n.get("nutrientId")
+            value = n.get("value")
+
+        if nutrient_id in IMPORTANT_NUTRIENTS and value is not None:
+            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value
+
     return nutrients
 
 def extract_portions(food_data):
