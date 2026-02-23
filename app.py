@@ -5,6 +5,10 @@ import sqlite3
 import uuid
 from datetime import date
 
+# ======================================================
+# CONFIG
+# ======================================================
+
 st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
@@ -22,7 +26,26 @@ IMPORTANT_NUTRIENTS = {
 
 MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snacks"]
 
-# ========================= USDA API =========================
+# ======================================================
+# DATABASE
+# ======================================================
+
+conn = sqlite3.connect("nutrition.db", check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS daily_log (
+    log_date TEXT,
+    ckd REAL,
+    diabetes REAL,
+    combined REAL
+)
+""")
+conn.commit()
+
+# ======================================================
+# USDA API (Defensive)
+# ======================================================
 
 @st.cache_data(ttl=86400)
 def search_food(query):
@@ -52,37 +75,37 @@ def get_food_details(fdc_id):
     except:
         return {}
 
+# ======================================================
+# NUTRIENT EXTRACTION (Robust)
+# ======================================================
+
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
 
     for n in food_data.get("foodNutrients", []):
-
         nutrient_id = None
         value = None
 
-        # Foundation / SR
         if "nutrient" in n:
             nutrient_id = n["nutrient"].get("id")
             nutrient_number = n["nutrient"].get("number")
             value = n.get("amount")
 
-            # Fallback using nutrient number (important fix)
-            if nutrient_number == "307":  # Sodium
+            if nutrient_number == "307":
                 nutrients["sodium"] = value or 0
-            elif nutrient_number == "306":  # Potassium
+            elif nutrient_number == "306":
                 nutrients["potassium"] = value or 0
-            elif nutrient_number == "305":  # Phosphorus
+            elif nutrient_number == "305":
                 nutrients["phosphorus"] = value or 0
-            elif nutrient_number == "205":  # Carbs
+            elif nutrient_number == "205":
                 nutrients["carbs"] = value or 0
-            elif nutrient_number == "203":  # Protein
+            elif nutrient_number == "203":
                 nutrients["protein"] = value or 0
-            elif nutrient_number == "208":  # Calories
+            elif nutrient_number == "208":
                 nutrients["calories"] = value or 0
-            elif nutrient_number == "269":  # Sugar
+            elif nutrient_number == "269":
                 nutrients["sugar"] = value or 0
 
-        # Branded
         if not nutrient_id:
             nutrient_id = n.get("nutrientId")
             value = n.get("value")
@@ -94,31 +117,36 @@ def extract_nutrients(food_data):
 
 def extract_portions(food_data):
     portions = [{"description": "100 g", "gramWeight": 100}]
+
     if food_data.get("servingSize"):
         portions.append({
             "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
             "gramWeight": food_data["servingSize"]
         })
+
     for p in food_data.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "description": p["portionDescription"],
                 "gramWeight": p["gramWeight"]
             })
+
     return portions
 
 def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
-# ========================= CLINICAL LIMITS =========================
+# ======================================================
+# CLINICAL LIMITS
+# ======================================================
 
 def adjusted_limits(stage, serum_k, serum_phos):
     limits = {
         "sodium": 2000 if stage >= 4 else 2300,
         "potassium": 2500,
         "phosphorus": 1000,
-        "carbs": 180  # default diabetes daily carb target
+        "carbs": 180
     }
 
     if serum_k >= 6:
@@ -138,22 +166,34 @@ def percent_and_excess(value, limit):
     excess = max(value - limit, 0)
     return round(percent,1), round(excess,1)
 
-# ========================= SIDEBAR =========================
+def risk_label(score):
+    if score <= 40:
+        return "Low", "🟢"
+    elif score <= 70:
+        return "Moderate", "🟡"
+    return "High", "🔴"
+
+# ======================================================
+# SIDEBAR
+# ======================================================
 
 st.sidebar.header("Patient Profile")
-
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
 fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
 
-# ========================= SESSION STATE =========================
+# ======================================================
+# SESSION STATE
+# ======================================================
 
 if "meals" not in st.session_state:
     st.session_state.meals = {meal: [] for meal in MEAL_TYPES}
 
-# ========================= UI =========================
+# ======================================================
+# UI
+# ======================================================
 
 st.title("Renal + Diabetes Clinical Daily Planner")
 
@@ -192,7 +232,9 @@ if "results" in st.session_state and st.session_state.results:
         scaled["portion"] = portion_choice["description"]
         st.session_state.meals[meal_choice].append(scaled)
 
-# ========================= DISPLAY MEALS WITH REMOVE =========================
+# ======================================================
+# DISPLAY MEALS WITH REMOVE
+# ======================================================
 
 daily_total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
 
@@ -213,7 +255,9 @@ for meal in MEAL_TYPES:
         for k in daily_total:
             daily_total[k] += item.get(k,0)
 
-# ========================= DAILY TOTAL =========================
+# ======================================================
+# DAILY TOTAL DISPLAY
+# ======================================================
 
 st.header("Daily Total")
 
@@ -229,7 +273,9 @@ for nutrient in ["sodium","potassium","phosphorus","carbs"]:
         f"(Limit: {limit} | {percent}% | +{excess} over)"
     )
 
-# ========================= RISK =========================
+# ======================================================
+# RISK SECTION
+# ======================================================
 
 ckd_percent = max(
     percent_and_excess(daily_total["sodium"], limits["sodium"])[0],
@@ -237,27 +283,46 @@ ckd_percent = max(
     percent_and_excess(daily_total["phosphorus"], limits["phosphorus"])[0]
 )
 
-dm_percent = percent_and_excess(daily_total["carbs"], limits["carbs"])[0]
-
-combined = round((ckd_percent*0.6)+(dm_percent*0.4),1)
+ckd_label, ckd_color = risk_label(ckd_percent)
 
 st.subheader("CKD Risk")
 st.metric("Score", round(ckd_percent,1))
+st.markdown(f"### {ckd_color} {ckd_label} Risk")
+
+driver = max(
+    ["sodium","potassium","phosphorus"],
+    key=lambda n: percent_and_excess(daily_total[n], limits[n])[0]
+)
+
+st.warning(f"Primary driver: {driver}")
+
+dm_percent = percent_and_excess(daily_total["carbs"], limits["carbs"])[0]
+dm_label, dm_color = risk_label(dm_percent)
 
 st.subheader("Diabetes Risk")
 st.metric("Score", round(dm_percent,1))
+st.markdown(f"### {dm_color} {dm_label} Risk")
+
+if hba1c >= 7:
+    st.warning("Elevated HbA1c increases long-term glycemic risk.")
+
+combined = round((ckd_percent*0.6)+(dm_percent*0.4),1)
+combined_label, combined_color = risk_label(combined)
 
 st.subheader("Combined Risk")
 st.metric("Score", combined)
+st.markdown(f"### {combined_color} {combined_label} Risk")
 
-# ========================= DISCLAIMER =========================
+# ======================================================
+# DISCLAIMER
+# ======================================================
 
 st.markdown("---")
 st.markdown("""
 ### ⚠️ Medical & Data Disclaimer
 
 This application is for educational purposes only.
-It does not provide medical advice.
+It does not provide medical advice, diagnosis, or treatment.
 
 Risk scores are generalized estimates based on dietary guidance
 and user-entered laboratory values.
