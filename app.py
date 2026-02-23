@@ -9,7 +9,7 @@ from datetime import date
 # CONFIG
 # ======================================================
 
-st.set_page_config(page_title="Renal + Diabetes Daily Planner", layout="wide")
+st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
@@ -36,12 +36,6 @@ c = conn.cursor()
 c.execute("""
 CREATE TABLE IF NOT EXISTS daily_log (
     log_date TEXT,
-    sodium REAL,
-    potassium REAL,
-    phosphorus REAL,
-    carbs REAL,
-    protein REAL,
-    calories REAL,
     ckd REAL,
     diabetes REAL,
     combined REAL
@@ -50,59 +44,84 @@ CREATE TABLE IF NOT EXISTS daily_log (
 conn.commit()
 
 # ======================================================
-# USDA FUNCTIONS
+# USDA API (DEFENSIVE)
 # ======================================================
 
 @st.cache_data(ttl=86400)
 def search_food(query):
-    r = requests.get(
-        f"{BASE_URL}/foods/search",
-        params={"query": query, "api_key": USDA_API_KEY, "pageSize": 5},
-        timeout=20
-    )
-    return r.json().get("foods", [])
+    try:
+        r = requests.get(
+            f"{BASE_URL}/foods/search",
+            params={"query": query, "api_key": USDA_API_KEY, "pageSize": 5},
+            timeout=20
+        )
+
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        return data.get("foods", [])
+
+    except Exception:
+        return []
 
 @st.cache_data(ttl=86400)
 def get_food_details(fdc_id):
-    r = requests.get(
-        f"{BASE_URL}/food/{fdc_id}",
-        params={"api_key": USDA_API_KEY},
-        timeout=20
-    )
-    return r.json()
+    try:
+        r = requests.get(
+            f"{BASE_URL}/food/{fdc_id}",
+            params={"api_key": USDA_API_KEY},
+            timeout=20
+        )
+
+        if r.status_code != 200 or not r.text.strip():
+            return {}
+
+        return r.json()
+
+    except Exception:
+        return {}
+
+# ======================================================
+# USDA PARSING
+# ======================================================
 
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
+
     for n in food_data.get("foodNutrients", []):
-        nid = None
+        nutrient_id = None
         value = None
 
         if "nutrient" in n:
-            nid = n["nutrient"].get("id")
+            nutrient_id = n["nutrient"].get("id")
             value = n.get("amount")
 
-        if not nid:
-            nid = n.get("nutrientId")
+        if not nutrient_id:
+            nutrient_id = n.get("nutrientId")
             value = n.get("value")
 
-        if nid in IMPORTANT_NUTRIENTS and value is not None:
-            nutrients[IMPORTANT_NUTRIENTS[nid]] = value
+        if nutrient_id in IMPORTANT_NUTRIENTS and value is not None:
+            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value
 
     return nutrients
 
 def extract_portions(food_data):
     portions = [{"description": "100 g", "gramWeight": 100}]
+
     if food_data.get("servingSize"):
         portions.append({
             "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
             "gramWeight": food_data["servingSize"]
         })
+
     for p in food_data.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "description": p["portionDescription"],
                 "gramWeight": p["gramWeight"]
             })
+
     return portions
 
 def scale_nutrients(nutrients, grams):
@@ -110,7 +129,7 @@ def scale_nutrients(nutrients, grams):
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
 # ======================================================
-# CLINICAL LOGIC
+# CLINICAL ENGINE
 # ======================================================
 
 def adjusted_limits(stage, serum_k, serum_phos):
@@ -137,7 +156,7 @@ def ckd_risk(total, limits, stage):
     triggers = []
 
     for n in ["sodium","potassium","phosphorus"]:
-        percent = (total[n] / limits[n]) * 100
+        percent = (total[n] / limits[n]) * 100 if limits[n] else 0
         max_percent = max(max_percent, percent)
         if percent > 100:
             triggers.append(n)
@@ -153,7 +172,7 @@ def diabetes_risk(total, hba1c, fasting_glucose):
 
     if total["carbs"] > 180:
         score += 40
-        triggers.append("high daily carbs")
+        triggers.append("high carbs")
 
     if total["sugar"] > 50:
         score += 30
@@ -171,10 +190,10 @@ def diabetes_risk(total, hba1c, fasting_glucose):
 
 def risk_label(score):
     if score <= 40:
-        return "🟢 Low Risk"
+        return "🟢 Low Risk — Within recommended limits."
     elif score <= 70:
-        return "🟡 Moderate Risk"
-    return "🔴 High Risk"
+        return "🟡 Moderate Risk — Approaching or partially exceeding limits."
+    return "🔴 High Risk — Exceeds recommended limits."
 
 # ======================================================
 # SIDEBAR
@@ -189,7 +208,7 @@ hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
 fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
 
 # ======================================================
-# STATE INIT
+# SESSION STATE
 # ======================================================
 
 if "meals" not in st.session_state:
@@ -199,7 +218,7 @@ if "meals" not in st.session_state:
 # UI
 # ======================================================
 
-st.title("Renal + Diabetes Daily Planner")
+st.title("Renal + Diabetes Clinical Daily Planner")
 
 meal_choice = st.selectbox("Select Meal Section", MEAL_TYPES)
 
@@ -209,6 +228,7 @@ if st.button("Search"):
     st.session_state.results = search_food(query)
 
 if "results" in st.session_state and st.session_state.results:
+
     selected = st.selectbox(
         "Select Food",
         st.session_state.results,
@@ -236,7 +256,7 @@ if "results" in st.session_state and st.session_state.results:
         st.session_state.meals[meal_choice].append(scaled)
 
 # ======================================================
-# DISPLAY ALL MEALS
+# DISPLAY MEALS
 # ======================================================
 
 daily_total = {k:0 for k in IMPORTANT_NUTRIENTS.values()}
@@ -249,7 +269,7 @@ for meal in MEAL_TYPES:
             daily_total[k] += item.get(k,0)
 
 # ======================================================
-# DAILY TOTAL SECTION
+# DAILY TOTAL
 # ======================================================
 
 st.header("Daily Total")
@@ -280,54 +300,47 @@ st.metric("Score", combined)
 st.write(risk_label(combined))
 
 if st.button("Save Full Day"):
-    c.execute("""
-        INSERT INTO daily_log VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
-        str(date.today()),
-        daily_total["sodium"],
-        daily_total["potassium"],
-        daily_total["phosphorus"],
-        daily_total["carbs"],
-        daily_total["protein"],
-        daily_total["calories"],
-        ckd_score,
-        dm_score,
-        combined
-    ))
+    c.execute(
+        "INSERT INTO daily_log VALUES (?,?,?,?)",
+        (str(date.today()), ckd_score, dm_score, combined)
+    )
     conn.commit()
     st.success("Daily summary saved.")
 
 # ======================================================
-# WEEKLY DASHBOARD
+# WEEKLY TREND
 # ======================================================
 
-st.header("Weekly Trend")
+st.header("Weekly Risk Trend")
 
 df = pd.read_sql_query(
-    "SELECT log_date, ckd, diabetes, combined FROM daily_log ORDER BY log_date DESC LIMIT 7",
+    "SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",
     conn
 )
 
 if not df.empty:
     df["log_date"] = pd.to_datetime(df["log_date"])
     df = df.sort_values("log_date")
-    st.line_chart(df.set_index("log_date"))
+    st.line_chart(df.set_index("log_date")[["ckd","diabetes","combined"]])
 
 # ======================================================
 # DISCLAIMER
 # ======================================================
 
 st.markdown("---")
+
 st.markdown("""
 ### ⚠️ Medical & Data Disclaimer
 
-This application is for educational purposes only.  
+This application is intended for educational and informational purposes only.
 It does not provide medical advice, diagnosis, or treatment.
 
-Risk scores are generalized estimates based on public dietary guidance and user-entered laboratory values.
+Risk scores are generalized estimates based on public dietary guidance and 
+user-entered laboratory values. They are not individualized medical prescriptions.
 
-Always consult your physician or registered dietitian before making dietary decisions.
+Always consult your physician, nephrologist, endocrinologist, or registered 
+dietitian before making dietary or medical decisions.
 
-Nutritional data provided by USDA FoodData Central (https://fdc.nal.usda.gov/).  
-This application is not affiliated with or endorsed by the USDA.
+Nutritional data provided by USDA FoodData Central (https://fdc.nal.usda.gov/).
+This application is not affiliated with, endorsed by, certified by, or sponsored by the USDA.
 """)
