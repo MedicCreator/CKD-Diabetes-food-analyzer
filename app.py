@@ -22,7 +22,7 @@ IMPORTANT_NUTRIENTS = {
 }
 
 # =====================================
-# USDA API
+# USDA API (CACHED)
 # =====================================
 
 @st.cache_data(ttl=86400)
@@ -52,12 +52,35 @@ def extract_nutrients(food_data):
             nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value if value else 0
     return nutrients
 
+def extract_portions(food_data):
+    portions = []
+
+    portions.append({
+        "description": "100 g",
+        "gramWeight": 100
+    })
+
+    if food_data.get("servingSize"):
+        portions.append({
+            "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
+            "gramWeight": food_data["servingSize"]
+        })
+
+    for p in food_data.get("foodPortions", []):
+        if p.get("gramWeight") and p.get("portionDescription"):
+            portions.append({
+                "description": p["portionDescription"],
+                "gramWeight": p["gramWeight"]
+            })
+
+    return portions
+
 def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
 # =====================================
-# CKD LOGIC
+# CKD + DIABETES LOGIC
 # =====================================
 
 def get_ckd_limits(stage):
@@ -87,10 +110,6 @@ def ckd_score(values, limits):
             if percent>100:
                 triggers.append(n)
     return round(min(score,100),1), triggers
-
-# =====================================
-# DIABETES LOGIC
-# =====================================
 
 def diabetes_score(carbs,sugar,fiber):
     carb_score=(carbs/60)*100
@@ -145,13 +164,24 @@ if "results" in st.session_state and st.session_state.results:
         format_func=lambda x:x["description"]
     )
 
-    grams=st.number_input("Quantity (grams)",value=100.0)
+    food_data=get_food_details(selected["fdcId"])
+    nutrients=extract_nutrients(food_data)
+    portions=extract_portions(food_data)
+
+    portion_choice=st.selectbox(
+        "Select Portion Type",
+        portions,
+        format_func=lambda x:x["description"]
+    )
+
+    quantity=st.number_input("How many portions?",min_value=0.1,value=1.0,step=0.1)
 
     if st.button("Add Food"):
-        food_data=get_food_details(selected["fdcId"])
-        nutrients=extract_nutrients(food_data)
+        grams=portion_choice["gramWeight"]*quantity
         scaled=scale_nutrients(nutrients,grams)
         scaled["name"]=selected["description"]
+        scaled["portion"]=portion_choice["description"]
+        scaled["grams"]=round(grams,1)
         st.session_state.meal.append(scaled)
         st.success("Food Added")
 
@@ -165,7 +195,7 @@ if st.session_state.meal:
     for i,item in enumerate(st.session_state.meal):
         col1,col2=st.columns([4,1])
         with col1:
-            st.write(f"• {item['name']}")
+            st.write(f"• {item['name']} ({item['portion']} | {item['grams']} g)")
         with col2:
             if st.button("Remove",key=i):
                 st.session_state.meal.pop(i)
@@ -187,7 +217,6 @@ if st.session_state.meal:
             st.write(f"{nutrient.capitalize()}: {round(value,1)} mg")
             st.progress(min(value/meal_limits[nutrient],1.0))
 
-    # Scores
     ckd,ckd_triggers=ckd_score(total,meal_limits)
     dm,dm_triggers=diabetes_score(total["carbs"],total["sugar"],total["fiber"])
     combined=combined_score(ckd,dm)
@@ -198,7 +227,6 @@ if st.session_state.meal:
     st.metric("CKD Risk",ckd)
     st.write(label)
     st.info(desc)
-
     if ckd_triggers:
         st.warning(f"Triggered by high: {', '.join(ckd_triggers)}")
 
@@ -206,7 +234,6 @@ if st.session_state.meal:
     st.metric("Diabetes Risk",dm)
     st.write(label2)
     st.info(desc2)
-
     if dm_triggers:
         st.warning(f"Triggered by high: {', '.join(dm_triggers)}")
 
