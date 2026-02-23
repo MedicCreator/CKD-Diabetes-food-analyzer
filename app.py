@@ -5,10 +5,6 @@ import sqlite3
 import uuid
 from datetime import date
 
-# =====================================
-# CONFIG
-# =====================================
-
 st.set_page_config(page_title="Renal + Diabetes Smart Planner", layout="wide")
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
@@ -24,9 +20,7 @@ IMPORTANT_NUTRIENTS = {
     2000: "sugar"
 }
 
-# =====================================
-# DATABASE
-# =====================================
+# ---------------- DATABASE ----------------
 
 conn = sqlite3.connect("nutrition.db", check_same_thread=False)
 c = conn.cursor()
@@ -45,9 +39,7 @@ CREATE TABLE IF NOT EXISTS daily_log (
 """)
 conn.commit()
 
-# =====================================
-# USDA FUNCTIONS
-# =====================================
+# ---------------- USDA ----------------
 
 @st.cache_data(ttl=86400)
 def search_food(query):
@@ -70,51 +62,46 @@ def get_food_details(fdc_id):
 def extract_nutrients(food_data):
     nutrients = {v: 0 for v in IMPORTANT_NUTRIENTS.values()}
     for n in food_data.get("foodNutrients", []):
-        nutrient_id = n.get("nutrient", {}).get("id") or n.get("nutrientId")
-        value = n.get("amount") if n.get("amount") is not None else n.get("value")
-        if nutrient_id in IMPORTANT_NUTRIENTS and value is not None:
-            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value
+        nid = n.get("nutrient", {}).get("id") or n.get("nutrientId")
+        val = n.get("amount") if n.get("amount") is not None else n.get("value")
+        if nid in IMPORTANT_NUTRIENTS and val is not None:
+            nutrients[IMPORTANT_NUTRIENTS[nid]] = val
     return nutrients
 
 def extract_portions(food_data):
     portions = [{"description": "100 g", "gramWeight": 100}]
-
     if food_data.get("servingSize"):
         portions.append({
             "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
             "gramWeight": food_data["servingSize"]
         })
-
     for p in food_data.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "description": p["portionDescription"],
                 "gramWeight": p["gramWeight"]
             })
-
     return portions
 
 def scale_nutrients(nutrients, grams):
     factor = grams / 100
     return {k: round((v or 0) * factor, 2) for k, v in nutrients.items()}
 
-# =====================================
-# CLINICAL LOGIC
-# =====================================
+# ---------------- CLINICAL ----------------
 
 def protein_target(weight, dialysis):
     return 1.2 * weight if dialysis else 0.8 * weight
 
 def auto_adjust_limits(stage, serum_k, serum_phos):
     limits = {"sodium": 2300, "potassium": 2500, "phosphorus": 1000}
-
     if stage >= 4:
         limits["sodium"] = 2000
     if serum_k > 5.5:
         limits["potassium"] = 1500
+    elif serum_k > 5.0:
+        limits["potassium"] = 2000
     if serum_phos > 4.5:
         limits["phosphorus"] = 800
-
     return limits
 
 def risk_score(total, limits):
@@ -130,11 +117,7 @@ def risk_label(score):
         return "🟡 Moderate Risk"
     return "🔴 High Risk"
 
-# =====================================
-# UI
-# =====================================
-
-st.title("Renal + Diabetes Smart Planner")
+# ---------------- SIDEBAR ----------------
 
 st.sidebar.header("Patient Profile")
 
@@ -143,7 +126,8 @@ stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 dialysis = st.sidebar.checkbox("On Dialysis")
 diabetic = st.sidebar.checkbox("Diabetic")
 
-st.sidebar.subheader("Labs")
+st.sidebar.subheader("Lab Values")
+
 serum_k = st.sidebar.number_input("Serum Potassium", value=4.5)
 serum_phos = st.sidebar.number_input("Serum Phosphorus", value=4.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", value=6.5)
@@ -151,12 +135,14 @@ fasting_glucose = st.sidebar.number_input("Fasting Glucose", value=100)
 
 daily_protein_target = protein_target(weight, dialysis)
 
+# ---------------- STATE ----------------
+
 if "meal" not in st.session_state:
     st.session_state.meal = []
 
-# =====================================
-# MEAL BUILDER
-# =====================================
+# ---------------- MEAL BUILDER ----------------
+
+st.title("Renal + Diabetes Smart Planner")
 
 st.header("Build Meal")
 
@@ -193,9 +179,7 @@ if "results" in st.session_state and st.session_state.results:
         scaled["portion"] = portion_choice["description"]
         st.session_state.meal.append(scaled)
 
-# =====================================
-# DISPLAY
-# =====================================
+# ---------------- DISPLAY ----------------
 
 if st.session_state.meal:
 
@@ -235,8 +219,8 @@ if st.session_state.meal:
     st.metric("Score", score)
     st.write(risk_label(score))
 
-    if diabetic and total["carbs"] > 60:
-        st.warning("High carbohydrate load for diabetes management.")
+    if diabetic and (total["carbs"] > 60 or hba1c > 7 or fasting_glucose > 130):
+        st.warning("Glycemic risk elevated. Consider reducing carbohydrate load.")
 
     if st.button("Save Day"):
         c.execute(
@@ -255,9 +239,7 @@ if st.session_state.meal:
         conn.commit()
         st.success("Saved!")
 
-# =====================================
-# WEEKLY DASHBOARD
-# =====================================
+# ---------------- WEEKLY DASHBOARD ----------------
 
 st.header("Weekly Dashboard")
 
@@ -272,14 +254,5 @@ if not df.empty:
     st.line_chart(df.set_index("log_date")[["risk"]])
     st.line_chart(df.set_index("log_date")[["calories"]])
 
-# =====================================
-# DISCLAIMER
-# =====================================
-
 st.markdown("---")
-st.markdown("""
-⚠️ Educational tool only. Not medical advice.
-Consult your healthcare provider.
-Nutritional data from USDA FoodData Central.
-Not affiliated with or endorsed by USDA.
-""")
+st.markdown("⚠️ Educational tool only. Not medical advice.")
