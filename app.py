@@ -27,14 +27,14 @@ IMPORTANT_NUTRIENTS = {
 def search_food(query):
     url = f"{BASE_URL}/foods/search"
     params = {"query": query, "api_key": USDA_API_KEY, "pageSize": 5}
-    r = requests.get(url, params=params, timeout=15)
+    r = requests.get(url, params=params, timeout=20)
     return r.json().get("foods", [])
 
 @st.cache_data(ttl=86400)
 def get_food_details(fdc_id):
     url = f"{BASE_URL}/food/{fdc_id}"
     params = {"api_key": USDA_API_KEY}
-    r = requests.get(url, params=params, timeout=15)
+    r = requests.get(url, params=params, timeout=20)
     return r.json()
 
 def extract_nutrients(food_data):
@@ -42,27 +42,37 @@ def extract_nutrients(food_data):
     for n in food_data.get("foodNutrients", []):
         nutrient_id = n.get("nutrient", {}).get("id") or n.get("nutrientId")
         value = n.get("amount") or n.get("value")
+
         if nutrient_id in IMPORTANT_NUTRIENTS:
-            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value
+            nutrients[IMPORTANT_NUTRIENTS[nutrient_id]] = value if value is not None else 0
     return nutrients
 
 def extract_portions(food_data):
     portions = [{"description": "100 g", "gramWeight": 100}]
+
     if food_data.get("servingSize"):
         portions.append({
             "description": f"1 serving ({food_data['servingSize']} {food_data.get('servingSizeUnit','g')})",
             "gramWeight": food_data["servingSize"]
         })
+
     for p in food_data.get("foodPortions", []):
-        portions.append({
-            "description": p.get("portionDescription"),
-            "gramWeight": p.get("gramWeight")
-        })
+        if p.get("gramWeight"):
+            portions.append({
+                "description": p.get("portionDescription"),
+                "gramWeight": p.get("gramWeight")
+            })
+
     return portions
 
 def scale_nutrients(nutrients, grams):
     factor = grams / 100
-    return {k: round(v * factor, 2) for k, v in nutrients.items()}
+    scaled = {}
+    for k, v in nutrients.items():
+        if v is None:
+            v = 0
+        scaled[k] = round(v * factor, 2)
+    return scaled
 
 # =====================================
 # CKD LOGIC
@@ -176,7 +186,7 @@ if "search_results" in st.session_state and st.session_state.search_results:
         st.session_state.meal.append(scaled)
         st.success("Food Added")
 
-# Remove Items
+# Remove items
 if st.session_state.meal:
     st.subheader("Current Meal")
     for i, item in enumerate(st.session_state.meal):
