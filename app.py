@@ -1,5 +1,5 @@
 # =====================================================
-# RENAL + DIABETES CLINICAL PLATFORM (CLOUD SAFE FINAL)
+# RENAL + DIABETES CLINICAL PLATFORM – FINAL ADMIN VERSION
 # =====================================================
 
 import streamlit as st
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS logs (
 conn.commit()
 
 # =====================================================
-# AUTH SYSTEM (HASHLIB ONLY)
+# AUTH SYSTEM (HASHLIB SAFE)
 # =====================================================
 
 def hash_password(password):
@@ -120,7 +120,7 @@ protein = st.number_input("Total Protein (g)", 0.0)
 water = st.number_input("Total Water Intake (ml)", 0.0)
 
 # =====================================================
-# LIMITS
+# LIMITS BY CKD STAGE
 # =====================================================
 
 limits = {
@@ -180,7 +180,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)
 conn.commit()
 
 # =====================================================
-# DISPLAY RISKS
+# DISPLAY RISK SUMMARY
 # =====================================================
 
 st.header("Risk Analysis")
@@ -190,7 +190,7 @@ label_dm, icon_dm = risk_label(dm_score)
 label_comb, icon_comb = risk_label(combined_score)
 
 st.write(f"CKD Risk: {icon_ckd} {label_ckd} ({round(ckd_score,1)}%)")
-for k,v in ckd_factors.items():
+for k,v in sorted(ckd_factors.items(), key=lambda x:x[1], reverse=True):
     st.write(f"   • {k}: {round(v,1)}% of daily limit")
 
 st.write(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
@@ -204,10 +204,11 @@ st.write(f"Combined Risk: {icon_comb} {label_comb} ({combined_score}%)")
 
 st.header("Protein & Fluid Summary")
 
-st.write(f"Protein Target: {round(protein_target,1)} g")
-st.write(f"Protein Consumed: {protein} g ({round((protein/protein_target)*100 if protein_target else 0,1)}%)")
+protein_percent = (protein/protein_target)*100 if protein_target else 0
 
-st.write(f"Total Fluid: {water} ml / {fluid_limit} ml")
+st.write(f"Protein Target: {round(protein_target,1)} g")
+st.write(f"Protein Consumed: {protein} g ({round(protein_percent,1)}%)")
+st.write(f"Fluid Intake: {water} ml / {fluid_limit} ml")
 
 # =====================================================
 # WEEKLY DASHBOARD
@@ -248,10 +249,10 @@ else:
     st.info("No monthly data yet.")
 
 # =====================================================
-# CSV EXPORT (CLOUD SAFE)
+# CSV EXPORT
 # =====================================================
 
-if st.button("📥 Download Monthly Report (CSV)"):
+if st.button("📥 Download My Clinical Report (CSV)"):
     report_df = pd.read_sql_query(
         "SELECT * FROM logs WHERE username=?",
         conn,
@@ -262,6 +263,27 @@ if st.button("📥 Download Monthly Report (CSV)"):
         report_df.to_csv(index=False),
         file_name=f"{st.session_state.user}_clinical_report.csv"
     )
+
+# =====================================================
+# ADMIN PANEL
+# =====================================================
+
+if st.session_state.user == "admin":
+
+    st.header("🔎 Admin Dashboard")
+
+    users_df = pd.read_sql_query("SELECT username FROM users", conn)
+    st.subheader("Registered Users")
+    st.dataframe(users_df)
+
+    logs_df = pd.read_sql_query("SELECT * FROM logs", conn)
+    st.subheader("All Logs")
+    st.dataframe(logs_df)
+
+    if st.button("⚠ Delete All Logs (Admin Only)"):
+        c.execute("DELETE FROM logs")
+        conn.commit()
+        st.warning("All logs deleted.")
 
 # =====================================================
 # LOGOUT
