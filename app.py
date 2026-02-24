@@ -13,6 +13,13 @@ BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 
 MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"]
 
+MEAL_DISTRIBUTION = {
+    "Breakfast": 0.25,
+    "Lunch": 0.30,
+    "Dinner": 0.30,
+    "Snacks": 0.15
+}
+
 # =====================================================
 # USDA FUNCTIONS
 # =====================================================
@@ -25,9 +32,7 @@ def search_food(query):
             params={"query": query, "api_key": USDA_API_KEY, "pageSize": 5},
             timeout=20,
         )
-        if r.status_code == 200:
-            return r.json().get("foods", [])
-        return []
+        return r.json().get("foods", []) if r.status_code == 200 else []
     except:
         return []
 
@@ -39,9 +44,7 @@ def get_food_details(fdc_id):
             params={"api_key": USDA_API_KEY},
             timeout=20,
         )
-        if r.status_code == 200:
-            return r.json()
-        return {}
+        return r.json() if r.status_code == 200 else {}
     except:
         return {}
 
@@ -73,7 +76,7 @@ def extract_nutrients(food):
                 nutrients["protein"] = val
             elif number == "208":
                 nutrients["calories"] = val
-            elif number == "255":   # WATER
+            elif number == "255":
                 nutrients["water"] = val
 
     return nutrients
@@ -135,13 +138,11 @@ def get_ckd_limits(stage, dialysis):
 
 limits = get_ckd_limits(stage, dialysis)
 
-# Lab tightening
 if serum_k >= 6:
     limits["potassium"] = 1500
 if serum_phos >= 6:
     limits["phosphorus"] = 700
 
-# Carb limit based on HbA1c
 if hba1c < 6.5:
     carb_limit = 200
 elif hba1c <= 7.5:
@@ -150,7 +151,6 @@ else:
     carb_limit = 150
 
 limits["carbs"] = carb_limit
-
 protein_target = weight * (1.2 if dialysis else 0.8)
 
 # =====================================================
@@ -200,7 +200,7 @@ if "results" in st.session_state and st.session_state.results:
         })
 
 # =====================================================
-# DISPLAY + REMOVE + EDIT
+# DISPLAY + CALCULATE
 # =====================================================
 
 daily = {"sodium":0,"potassium":0,"phosphorus":0,
@@ -231,65 +231,71 @@ for meal in MEALS:
             daily[k] += scaled[k]
 
 # =====================================================
-# TOTALS
+# LIMIT DISPLAY
 # =====================================================
 
-st.header("Daily Totals")
+st.header("Allowed Limits")
 
-for k in ["sodium","potassium","phosphorus","carbs","protein","calories"]:
-    st.write(f"{k.capitalize()}: {round(daily[k],1)}")
+col1, col2 = st.columns(2)
 
-manual_fluid = st.number_input("Additional Fluid Intake (ml)", 0.0)
-total_fluid = daily["water"] + manual_fluid
+with col1:
+    st.write("Daily Limits")
+    for n in ["sodium","potassium","phosphorus","carbs"]:
+        st.write(f"{n.capitalize()}: {limits[n]}")
 
-st.write(f"Water from Food: {round(daily['water'],1)} ml")
-st.write(f"Total Fluid: {round(total_fluid,1)} ml (Limit {fluid_limit})")
+with col2:
+    st.write(f"{meal_choice} Limits")
+    meal_fraction = MEAL_DISTRIBUTION[meal_choice]
+    for n in ["sodium","potassium","phosphorus","carbs"]:
+        st.write(f"{n.capitalize()}: {round(limits[n]*meal_fraction,1)}")
 
 # =====================================================
-# RISK CALCULATION
+# SIDE BY SIDE
+# =====================================================
+
+st.header("Comparison")
+
+for n in ["sodium","potassium","phosphorus","carbs"]:
+    daily_limit = limits[n]
+    meal_limit = daily_limit * MEAL_DISTRIBUTION[meal_choice]
+
+    daily_percent = (daily[n]/daily_limit)*100 if daily_limit else 0
+    meal_percent = (daily[n]/meal_limit)*100 if meal_limit else 0
+
+    st.write(
+        f"{n.capitalize()} | "
+        f"Consumed: {round(daily[n],1)} | "
+        f"Daily: {round(daily_percent,1)}% | "
+        f"{meal_choice}: {round(meal_percent,1)}%"
+    )
+
+# =====================================================
+# RISK
 # =====================================================
 
 def risk_label(p):
-    if p <= 40:
-        return "Low","🟢"
-    elif p <= 70:
-        return "Moderate","🟡"
+    if p <= 40: return "Low","🟢"
+    elif p <= 70: return "Moderate","🟡"
     return "High","🔴"
 
-# CKD
-ckd_contrib = {}
-for n in ["sodium","potassium","phosphorus"]:
-    percent = (daily[n] / limits[n]) * 100
-    ckd_contrib[n] = percent
+ckd_score = max(
+    daily["sodium"]/limits["sodium"]*100,
+    daily["potassium"]/limits["potassium"]*100,
+    daily["phosphorus"]/limits["phosphorus"]*100
+)
 
-ckd_score = max(ckd_contrib.values())
-label_ckd, icon_ckd = risk_label(ckd_score)
+dm_score = daily["carbs"]/limits["carbs"]*100
+combined = round((ckd_score*0.6)+(dm_score*0.4),1)
 
-st.subheader("CKD Risk")
-st.markdown(f"{icon_ckd} **{label_ckd}** ({round(ckd_score,1)}%)")
+st.subheader("Risk Summary")
 
-for n,p in sorted(ckd_contrib.items(), key=lambda x:x[1], reverse=True):
-    st.write(f"{n.capitalize()}: {round(p,1)}% of daily limit")
+l1,i1 = risk_label(ckd_score)
+l2,i2 = risk_label(dm_score)
+l3,i3 = risk_label(combined)
 
-# Diabetes
-dm_percent = (daily["carbs"] / limits["carbs"]) * 100
-label_dm, icon_dm = risk_label(dm_percent)
-
-st.subheader("Diabetes Risk")
-st.markdown(f"{icon_dm} **{label_dm}** ({round(dm_percent,1)}%)")
-st.write(f"Carbohydrates: {round(dm_percent,1)}% of daily limit")
-
-if hba1c >= 7:
-    st.warning("Elevated HbA1c increases long-term glycemic risk.")
-if fasting_glucose >= 130:
-    st.warning("Elevated fasting glucose increases short-term glycemic risk.")
-
-# Combined
-combined = round((ckd_score * 0.6) + (dm_percent * 0.4),1)
-label_c, icon_c = risk_label(combined)
-
-st.subheader("Combined Risk")
-st.markdown(f"{icon_c} **{label_c}** ({combined}%)")
+st.write(f"CKD: {i1} {l1} ({round(ckd_score,1)}%)")
+st.write(f"Diabetes: {i2} {l2} ({round(dm_score,1)}%)")
+st.write(f"Combined: {i3} {l3} ({combined}%)")
 
 # =====================================================
 # PROTEIN
@@ -299,11 +305,22 @@ st.subheader("Protein Target")
 st.write(f"Target: {round(protein_target,1)} g")
 
 if daily["protein"] < protein_target*0.8:
-    st.warning("Protein intake below recommended target.")
+    st.warning("Protein below target.")
 elif daily["protein"] > protein_target*1.3:
-    st.warning("Protein intake above recommended target.")
+    st.warning("Protein above target.")
 else:
-    st.success("Protein intake within target range.")
+    st.success("Protein within range.")
+
+# =====================================================
+# FLUID
+# =====================================================
+
+manual_fluid = st.number_input("Additional Fluid Intake (ml)", 0.0)
+total_fluid = daily["water"] + manual_fluid
+
+st.subheader("Fluid")
+st.write(f"Water from food: {round(daily['water'],1)} ml")
+st.write(f"Total Fluid: {round(total_fluid,1)} ml (Limit {fluid_limit})")
 
 # =====================================================
 # DISCLAIMER
@@ -312,9 +329,8 @@ else:
 st.markdown("---")
 st.markdown("""
 ### Medical & Data Disclaimer
-This application is for educational purposes only.
-It does not provide medical advice, diagnosis, or treatment.
-Always consult your physician before making dietary decisions.
+Educational tool only. Not medical advice.
+Consult your physician before making dietary decisions.
 
 Nutritional data provided by USDA FoodData Central.
 Not affiliated with or endorsed by USDA.
