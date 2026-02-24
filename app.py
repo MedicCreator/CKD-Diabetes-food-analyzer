@@ -57,7 +57,7 @@ def extract_nutrients(food):
     for n in food.get("foodNutrients", []):
         if "nutrient" in n:
             number = n["nutrient"].get("number")
-            val = n.get("amount") or 0
+            val = float(n.get("amount") or 0)
 
             if number == "307": nutrients["sodium"] = val
             elif number == "306": nutrients["potassium"] = val
@@ -75,14 +75,14 @@ def extract_portions(food):
     if food.get("servingSize"):
         portions.append({
             "desc": f"1 serving ({food['servingSize']} g)",
-            "grams": food["servingSize"]
+            "grams": float(food["servingSize"])
         })
 
     for p in food.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "desc": p["portionDescription"],
-                "grams": p["gramWeight"]
+                "grams": float(p["gramWeight"])
             })
 
     return portions
@@ -213,74 +213,34 @@ for meal in MEALS:
             daily[k] += scaled[k]
 
 # =====================================================
-# LIMIT DISPLAY
+# NUTRIENT DISPLAY WITH % DAILY + % MEAL
 # =====================================================
 
-st.header("Daily vs Per-Meal Limits")
+st.header("Daily vs Per-Meal Comparison")
 
-for n in ["sodium","potassium","phosphorus","carbs"]:
-    meal_limit = limits[n] * MEAL_DISTRIBUTION[meal_choice]
-    daily_percent = (daily[n]/limits[n])*100 if limits[n] else 0
+for n in ["sodium","potassium","phosphorus","carbs","protein"]:
+    if n == "protein":
+        daily_limit = protein_target
+    else:
+        daily_limit = limits[n]
+
+    meal_limit = daily_limit * MEAL_DISTRIBUTION[meal_choice]
+
+    daily_percent = (daily[n]/daily_limit)*100 if daily_limit else 0
     meal_percent = (daily[n]/meal_limit)*100 if meal_limit else 0
 
     st.write(
-        f"{n.capitalize()} | Consumed: {round(daily[n],1)} | "
-        f"Daily Limit: {limits[n]} ({round(daily_percent,1)}%) | "
+        f"{n.capitalize()} | "
+        f"Consumed: {round(daily[n],1)} | "
+        f"Daily Limit: {round(daily_limit,1)} ({round(daily_percent,1)}%) | "
         f"{meal_choice} Limit: {round(meal_limit,1)} ({round(meal_percent,1)}%)"
     )
 
 # =====================================================
-# RISK
+# PROTEIN STATUS
 # =====================================================
 
-def risk_label(p):
-    if p <= 40: return "Low","🟢"
-    elif p <= 70: return "Moderate","🟡"
-    return "High","🔴"
-
-st.header("Risk Analysis")
-
-ckd_contrib = {
-    "Sodium": (daily["sodium"]/limits["sodium"])*100,
-    "Potassium": (daily["potassium"]/limits["potassium"])*100,
-    "Phosphorus": (daily["phosphorus"]/limits["phosphorus"])*100
-}
-
-ckd_score = max(ckd_contrib.values())
-label_ckd, icon_ckd = risk_label(ckd_score)
-
-st.subheader(f"CKD Risk: {icon_ckd} {label_ckd} ({round(ckd_score,1)}%)")
-
-for k,v in sorted(ckd_contrib.items(), key=lambda x:x[1], reverse=True):
-    st.write(f"{k}: {round(v,1)}% of limit")
-
-dm_score = (daily["carbs"]/limits["carbs"])*100
-label_dm, icon_dm = risk_label(dm_score)
-
-st.subheader(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
-st.write(f"Carbohydrates: {round(dm_score,1)}% of limit")
-
-if hba1c >= 7:
-    st.warning("Elevated HbA1c increases long-term glycemic risk.")
-if fasting_glucose >= 130:
-    st.warning("Elevated fasting glucose increases short-term glycemic risk.")
-
-combined = round((ckd_score*0.6)+(dm_score*0.4),1)
-label_c, icon_c = risk_label(combined)
-
-st.subheader(f"Combined Risk: {icon_c} {label_c} ({combined}%)")
-
-if ckd_score > dm_score:
-    st.info("CKD factors are contributing more to total risk.")
-else:
-    st.info("Diabetes factors are contributing more to total risk.")
-
-# =====================================================
-# PROTEIN
-# =====================================================
-
-st.header("Protein Target")
-st.write(f"Target: {round(protein_target,1)} g")
+st.subheader("Protein Evaluation")
 
 if daily["protein"] < protein_target*0.8:
     st.warning("Protein below recommended range.")
@@ -310,10 +270,8 @@ st.markdown("""
 This application is for educational purposes only.
 It does not provide medical advice, diagnosis, or treatment.
 
-Risk scores are estimates based on dietary guidelines and user-entered data.
-
-Always consult your physician, nephrologist, or dietitian before making dietary decisions.
+Always consult your physician before making dietary decisions.
 
 Nutritional data provided by USDA FoodData Central.
-This application is not affiliated with or endorsed by the USDA.
+Not affiliated with or endorsed by the USDA.
 """)
