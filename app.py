@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import uuid
+import sqlite3
+import pandas as pd
+from datetime import date, timedelta
 
 # =====================================================
 # CONFIG
@@ -21,7 +24,30 @@ MEAL_DISTRIBUTION = {
 }
 
 # =====================================================
-# USDA API
+# DATABASE SETUP
+# =====================================================
+
+conn = sqlite3.connect("renal_tracker.db", check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS daily_log (
+    log_date TEXT PRIMARY KEY,
+    sodium REAL,
+    potassium REAL,
+    phosphorus REAL,
+    carbs REAL,
+    protein REAL,
+    calories REAL,
+    ckd_risk REAL,
+    diabetes_risk REAL,
+    combined_risk REAL
+)
+""")
+conn.commit()
+
+# =====================================================
+# USDA FUNCTIONS
 # =====================================================
 
 @st.cache_data(ttl=86400)
@@ -72,12 +98,6 @@ def extract_nutrients(food):
 def extract_portions(food):
     portions = [{"desc": "100 g", "grams": 100}]
 
-    if food.get("servingSize"):
-        portions.append({
-            "desc": f"1 serving ({food['servingSize']} g)",
-            "grams": float(food["servingSize"])
-        })
-
     for p in food.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
@@ -92,7 +112,7 @@ def scale(nutrients, grams):
     return {k: round(v * factor, 2) for k, v in nutrients.items()}
 
 # =====================================================
-# SIDEBAR PROFILE
+# PATIENT PROFILE
 # =====================================================
 
 st.sidebar.header("Patient Profile")
@@ -137,7 +157,7 @@ limits["carbs"] = carb_limit
 protein_target = weight * (1.2 if dialysis else 0.8)
 
 # =====================================================
-# SESSION STATE
+# SESSION
 # =====================================================
 
 if "meals" not in st.session_state:
@@ -183,7 +203,7 @@ if "results" in st.session_state and st.session_state.results:
         })
 
 # =====================================================
-# DISPLAY + TOTALS
+# TOTALS
 # =====================================================
 
 daily = {"sodium":0,"potassium":0,"phosphorus":0,
@@ -213,52 +233,78 @@ for meal in MEALS:
             daily[k] += scaled[k]
 
 # =====================================================
-# NUTRIENT DISPLAY WITH % DAILY + % MEAL
+# RISK CALCULATION
 # =====================================================
 
-st.header("Daily vs Per-Meal Comparison")
+def risk_label(p):
+    if p <= 40: return "Low","🟢"
+    elif p <= 70: return "Moderate","🟡"
+    return "High","🔴"
 
-for n in ["sodium","potassium","phosphorus","carbs","protein"]:
-    if n == "protein":
-        daily_limit = protein_target
-    else:
-        daily_limit = limits[n]
+ckd_score = max(
+    (daily["sodium"]/limits["sodium"])*100,
+    (daily["potassium"]/limits["potassium"])*100,
+    (daily["phosphorus"]/limits["phosphorus"])*100
+)
 
-    meal_limit = daily_limit * MEAL_DISTRIBUTION[meal_choice]
-
-    daily_percent = (daily[n]/daily_limit)*100 if daily_limit else 0
-    meal_percent = (daily[n]/meal_limit)*100 if meal_limit else 0
-
-    st.write(
-        f"{n.capitalize()} | "
-        f"Consumed: {round(daily[n],1)} | "
-        f"Daily Limit: {round(daily_limit,1)} ({round(daily_percent,1)}%) | "
-        f"{meal_choice} Limit: {round(meal_limit,1)} ({round(meal_percent,1)}%)"
-    )
+dm_score = (daily["carbs"]/limits["carbs"])*100
+combined = round((ckd_score*0.6)+(dm_score*0.4),1)
 
 # =====================================================
-# PROTEIN STATUS
+# SAVE DAILY LOG
 # =====================================================
 
-st.subheader("Protein Evaluation")
+today = str(date.today())
 
-if daily["protein"] < protein_target*0.8:
-    st.warning("Protein below recommended range.")
-elif daily["protein"] > protein_target*1.3:
-    st.warning("Protein above recommended range.")
+c.execute("""
+INSERT OR REPLACE INTO daily_log
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", (
+    today,
+    daily["sodium"],
+    daily["potassium"],
+    daily["phosphorus"],
+    daily["carbs"],
+    daily["protein"],
+    daily["calories"],
+    ckd_score,
+    dm_score,
+    combined
+))
+conn.commit()
+
+# =====================================================
+# DISPLAY RISKS
+# =====================================================
+
+st.header("Risk Summary")
+
+l1,i1 = risk_label(ckd_score)
+l2,i2 = risk_label(dm_score)
+l3,i3 = risk_label(combined)
+
+st.write(f"CKD: {i1} {l1} ({round(ckd_score,1)}%)")
+st.write(f"Diabetes: {i2} {l2} ({round(dm_score,1)}%)")
+st.write(f"Combined: {i3} {l3} ({combined}%)")
+
+# =====================================================
+# WEEKLY DASHBOARD
+# =====================================================
+
+st.header("Weekly Risk Trend")
+
+week_ago = str(date.today() - timedelta(days=7))
+
+df = pd.read_sql_query(
+    "SELECT * FROM daily_log WHERE log_date >= ?",
+    conn,
+    params=(week_ago,)
+)
+
+if not df.empty:
+    st.line_chart(df.set_index("log_date")[["ckd_risk","diabetes_risk","combined_risk"]])
 else:
-    st.success("Protein within recommended range.")
-
-# =====================================================
-# FLUID
-# =====================================================
-
-manual_fluid = st.number_input("Additional Fluid Intake (ml)", 0.0)
-total_fluid = daily["water"] + manual_fluid
-
-st.header("Fluid Tracking")
-st.write(f"Water from food: {round(daily['water'],1)} ml")
-st.write(f"Total Fluid: {round(total_fluid,1)} ml (Limit {fluid_limit})")
+    st.info("No data yet for weekly trend.")
 
 # =====================================================
 # DISCLAIMER
@@ -267,11 +313,9 @@ st.write(f"Total Fluid: {round(total_fluid,1)} ml (Limit {fluid_limit})")
 st.markdown("---")
 st.markdown("""
 ### Medical & Data Disclaimer
-This application is for educational purposes only.
-It does not provide medical advice, diagnosis, or treatment.
-
-Always consult your physician before making dietary decisions.
+Educational tool only. Not medical advice.
+Consult your healthcare provider before dietary changes.
 
 Nutritional data provided by USDA FoodData Central.
-Not affiliated with or endorsed by the USDA.
+Not affiliated with or endorsed by USDA.
 """)
