@@ -1,5 +1,5 @@
 # =====================================================
-# RENAL + DIABETES CLINICAL PLATFORM (FINAL STABLE)
+# RENAL + DIABETES CLINICAL PLATFORM (CLOUD SAFE FINAL)
 # =====================================================
 
 import streamlit as st
@@ -7,13 +7,6 @@ import sqlite3
 import pandas as pd
 import hashlib
 from datetime import date, timedelta
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-
-# =====================================================
-# CONFIG
-# =====================================================
 
 st.set_page_config(page_title="Renal + Diabetes Clinical Platform", layout="wide")
 
@@ -50,7 +43,7 @@ CREATE TABLE IF NOT EXISTS logs (
 conn.commit()
 
 # =====================================================
-# AUTH SYSTEM (NO BCRYPT)
+# AUTH SYSTEM (HASHLIB ONLY)
 # =====================================================
 
 def hash_password(password):
@@ -76,7 +69,7 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 # =====================================================
-# LOGIN / REGISTER
+# LOGIN SCREEN
 # =====================================================
 
 if not st.session_state.user:
@@ -109,7 +102,6 @@ if not st.session_state.user:
 
 st.sidebar.title(f"👤 {st.session_state.user}")
 
-# Patient Profile
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 weight = st.sidebar.number_input("Body Weight (kg)", 70.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", 6.5)
@@ -118,7 +110,6 @@ fluid_limit = st.sidebar.number_input("Daily Fluid Limit (ml)", 2000.0)
 
 protein_target = weight * 0.8
 
-# Nutrient Inputs
 st.title("Renal + Diabetes Daily Entry")
 
 sodium = st.number_input("Total Sodium (mg)", 0.0)
@@ -203,7 +194,7 @@ for k,v in ckd_factors.items():
     st.write(f"   • {k}: {round(v,1)}% of daily limit")
 
 st.write(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
-st.write(f"   • Carbs: {round(dm_score,1)}% of daily limit")
+st.write(f"   • Carbohydrates: {round(dm_score,1)}% of daily limit")
 
 st.write(f"Combined Risk: {icon_comb} {label_comb} ({combined_score}%)")
 
@@ -257,38 +248,20 @@ else:
     st.info("No monthly data yet.")
 
 # =====================================================
-# PDF EXPORT
+# CSV EXPORT (CLOUD SAFE)
 # =====================================================
 
-def generate_pdf():
-    filename = f"{st.session_state.user}_clinical_report.pdf"
-    doc = SimpleDocTemplate(filename)
-    elements = []
-    styles = getSampleStyleSheet()
-
-    elements.append(Paragraph("Renal + Diabetes Clinical Report", styles["Title"]))
-    elements.append(Spacer(1, 0.3 * inch))
-    elements.append(Paragraph(f"Date: {today}", styles["Normal"]))
-    elements.append(Paragraph(f"CKD Risk: {round(ckd_score,1)}%", styles["Normal"]))
-    elements.append(Paragraph(f"Diabetes Risk: {round(dm_score,1)}%", styles["Normal"]))
-    elements.append(Paragraph(f"Combined Risk: {round(combined_score,1)}%", styles["Normal"]))
-    elements.append(Spacer(1, 0.3 * inch))
-
-    elements.append(Paragraph("Nutrient Totals:", styles["Heading2"]))
-    elements.append(Paragraph(f"Sodium: {sodium} mg", styles["Normal"]))
-    elements.append(Paragraph(f"Potassium: {potassium} mg", styles["Normal"]))
-    elements.append(Paragraph(f"Phosphorus: {phosphorus} mg", styles["Normal"]))
-    elements.append(Paragraph(f"Carbs: {carbs} g", styles["Normal"]))
-    elements.append(Paragraph(f"Protein: {protein} g", styles["Normal"]))
-    elements.append(Paragraph(f"Water: {water} ml", styles["Normal"]))
-
-    doc.build(elements)
-    return filename
-
-if st.button("📄 Export PDF Report"):
-    pdf_file = generate_pdf()
-    with open(pdf_file, "rb") as f:
-        st.download_button("Download Report", f, file_name=pdf_file)
+if st.button("📥 Download Monthly Report (CSV)"):
+    report_df = pd.read_sql_query(
+        "SELECT * FROM logs WHERE username=?",
+        conn,
+        params=(st.session_state.user,)
+    )
+    st.download_button(
+        "Download CSV",
+        report_df.to_csv(index=False),
+        file_name=f"{st.session_state.user}_clinical_report.csv"
+    )
 
 # =====================================================
 # LOGOUT
@@ -307,8 +280,5 @@ st.markdown("""
 ### Medical & Data Disclaimer
 This application is for educational purposes only.
 It does not provide medical advice, diagnosis, or treatment.
-
 Always consult your physician before making clinical decisions.
-
-Not affiliated with or endorsed by USDA.
 """)
