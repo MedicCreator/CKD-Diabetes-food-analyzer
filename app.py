@@ -1,33 +1,24 @@
 # =====================================================
-# RENAL + DIABETES CLINICAL PLATFORM – FINAL ADMIN VERSION
+# RENAL + DIABETES CLINICAL PLATFORM – OPEN VERSION
 # =====================================================
 
 import streamlit as st
 import sqlite3
 import pandas as pd
-import hashlib
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Renal + Diabetes Clinical Platform", layout="wide")
 
 # =====================================================
-# DATABASE
+# DATABASE (Single Shared Clinical Log)
 # =====================================================
 
-conn = sqlite3.connect("renal_platform.db", check_same_thread=False)
+conn = sqlite3.connect("renal_open_platform.db", check_same_thread=False)
 c = conn.cursor()
 
 c.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    password TEXT
-)
-""")
-
-c.execute("""
 CREATE TABLE IF NOT EXISTS logs (
-    username TEXT,
-    log_date TEXT,
+    log_date TEXT PRIMARY KEY,
     sodium REAL,
     potassium REAL,
     phosphorus REAL,
@@ -36,71 +27,16 @@ CREATE TABLE IF NOT EXISTS logs (
     water REAL,
     ckd_risk REAL,
     diabetes_risk REAL,
-    combined_risk REAL,
-    PRIMARY KEY (username, log_date)
+    combined_risk REAL
 )
 """)
 conn.commit()
 
 # =====================================================
-# AUTH SYSTEM (HASHLIB SAFE)
+# PATIENT PROFILE
 # =====================================================
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def register(username, password):
-    try:
-        c.execute("INSERT INTO users VALUES (?,?)",
-                  (username, hash_password(password)))
-        conn.commit()
-        return True
-    except:
-        return False
-
-def login(username, password):
-    c.execute("SELECT password FROM users WHERE username=?", (username,))
-    result = c.fetchone()
-    if result and result[0] == hash_password(password):
-        return True
-    return False
-
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-# =====================================================
-# LOGIN SCREEN
-# =====================================================
-
-if not st.session_state.user:
-
-    st.title("🔐 Renal + Diabetes Clinical Platform")
-
-    mode = st.radio("Select Mode", ["Login", "Register"])
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    if st.button(mode):
-        if mode == "Register":
-            if register(username, password):
-                st.success("Account created. Please login.")
-            else:
-                st.error("Username already exists.")
-        else:
-            if login(username, password):
-                st.session_state.user = username
-                st.success("Login successful.")
-                st.rerun()
-            else:
-                st.error("Invalid credentials.")
-
-    st.stop()
-
-# =====================================================
-# MAIN APP
-# =====================================================
-
-st.sidebar.title(f"👤 {st.session_state.user}")
+st.sidebar.title("Patient Profile")
 
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 weight = st.sidebar.number_input("Body Weight (kg)", 70.0)
@@ -110,7 +46,11 @@ fluid_limit = st.sidebar.number_input("Daily Fluid Limit (ml)", 2000.0)
 
 protein_target = weight * 0.8
 
-st.title("Renal + Diabetes Daily Entry")
+# =====================================================
+# DAILY ENTRY
+# =====================================================
+
+st.title("Renal + Diabetes Daily Clinical Entry")
 
 sodium = st.number_input("Total Sodium (mg)", 0.0)
 potassium = st.number_input("Total Potassium (mg)", 0.0)
@@ -163,9 +103,8 @@ today = str(date.today())
 
 c.execute("""
 INSERT OR REPLACE INTO logs
-VALUES (?,?,?,?,?,?,?,?,?,?,?)
+VALUES (?,?,?,?,?,?,?,?,?,?)
 """, (
-    st.session_state.user,
     today,
     sodium,
     potassium,
@@ -180,7 +119,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)
 conn.commit()
 
 # =====================================================
-# DISPLAY RISK SUMMARY
+# DISPLAY RISK ANALYSIS
 # =====================================================
 
 st.header("Risk Analysis")
@@ -189,14 +128,14 @@ label_ckd, icon_ckd = risk_label(ckd_score)
 label_dm, icon_dm = risk_label(dm_score)
 label_comb, icon_comb = risk_label(combined_score)
 
-st.write(f"CKD Risk: {icon_ckd} {label_ckd} ({round(ckd_score,1)}%)")
+st.subheader(f"CKD Risk: {icon_ckd} {label_ckd} ({round(ckd_score,1)}%)")
 for k,v in sorted(ckd_factors.items(), key=lambda x:x[1], reverse=True):
-    st.write(f"   • {k}: {round(v,1)}% of daily limit")
+    st.write(f"• {k}: {round(v,1)}% of daily limit")
 
-st.write(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
-st.write(f"   • Carbohydrates: {round(dm_score,1)}% of daily limit")
+st.subheader(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
+st.write(f"• Carbohydrates: {round(dm_score,1)}% of daily limit")
 
-st.write(f"Combined Risk: {icon_comb} {label_comb} ({combined_score}%)")
+st.subheader(f"Combined Risk: {icon_comb} {label_comb} ({combined_score}%)")
 
 # =====================================================
 # PROTEIN & FLUID
@@ -219,9 +158,9 @@ st.header("📊 Weekly Dashboard")
 week_ago = str(date.today() - timedelta(days=7))
 
 df_week = pd.read_sql_query(
-    "SELECT * FROM logs WHERE username=? AND log_date>=?",
+    "SELECT * FROM logs WHERE log_date>=?",
     conn,
-    params=(st.session_state.user, week_ago)
+    params=(week_ago,)
 )
 
 if not df_week.empty:
@@ -238,9 +177,9 @@ st.header("📅 Monthly Dashboard")
 month_ago = str(date.today() - timedelta(days=30))
 
 df_month = pd.read_sql_query(
-    "SELECT * FROM logs WHERE username=? AND log_date>=?",
+    "SELECT * FROM logs WHERE log_date>=?",
     conn,
-    params=(st.session_state.user, month_ago)
+    params=(month_ago,)
 )
 
 if not df_month.empty:
@@ -252,46 +191,13 @@ else:
 # CSV EXPORT
 # =====================================================
 
-if st.button("📥 Download My Clinical Report (CSV)"):
-    report_df = pd.read_sql_query(
-        "SELECT * FROM logs WHERE username=?",
-        conn,
-        params=(st.session_state.user,)
-    )
+if st.button("📥 Download Full Clinical Log (CSV)"):
+    report_df = pd.read_sql_query("SELECT * FROM logs", conn)
     st.download_button(
         "Download CSV",
         report_df.to_csv(index=False),
-        file_name=f"{st.session_state.user}_clinical_report.csv"
+        file_name="renal_diabetes_clinical_log.csv"
     )
-
-# =====================================================
-# ADMIN PANEL
-# =====================================================
-
-if st.session_state.user == "admin":
-
-    st.header("🔎 Admin Dashboard")
-
-    users_df = pd.read_sql_query("SELECT username FROM users", conn)
-    st.subheader("Registered Users")
-    st.dataframe(users_df)
-
-    logs_df = pd.read_sql_query("SELECT * FROM logs", conn)
-    st.subheader("All Logs")
-    st.dataframe(logs_df)
-
-    if st.button("⚠ Delete All Logs (Admin Only)"):
-        c.execute("DELETE FROM logs")
-        conn.commit()
-        st.warning("All logs deleted.")
-
-# =====================================================
-# LOGOUT
-# =====================================================
-
-if st.sidebar.button("Logout"):
-    st.session_state.user = None
-    st.rerun()
 
 # =====================================================
 # DISCLAIMER
