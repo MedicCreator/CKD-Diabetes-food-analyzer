@@ -1,5 +1,5 @@
 # ==========================================================
-# RENAL + DIABETES CLINICAL PLATFORM – COMPLETE FINAL BUILD
+# RENAL + DIABETES CLINICAL PLATFORM – STABLE FINAL VERSION
 # ==========================================================
 
 import streamlit as st
@@ -18,14 +18,16 @@ MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"]
 MEAL_SPLIT = {"Breakfast":0.25,"Lunch":0.30,"Dinner":0.30,"Snacks":0.15}
 
 # ==========================================================
-# DATABASE
+# DATABASE INITIALIZATION (SAFE RESET STRUCTURE)
 # ==========================================================
 
 conn = sqlite3.connect("renal_platform.db", check_same_thread=False)
 c = conn.cursor()
 
+c.execute("DROP TABLE IF EXISTS logs")
+
 c.execute("""
-CREATE TABLE IF NOT EXISTS logs (
+CREATE TABLE logs (
     patient TEXT,
     log_date TEXT,
     sodium REAL,
@@ -33,8 +35,8 @@ CREATE TABLE IF NOT EXISTS logs (
     phosphorus REAL,
     carbs REAL,
     protein REAL,
-    water REAL,
     calories REAL,
+    water REAL,
     ckd_risk REAL,
     dm_risk REAL,
     combined_risk REAL,
@@ -122,10 +124,8 @@ hba1c=st.sidebar.number_input("HbA1c (%)",6.5)
 fasting_glucose=st.sidebar.number_input("Fasting Glucose",100)
 daily_water_limit=st.sidebar.number_input("Daily Water Limit (ml)",2000.0)
 
-# Estimated calorie need (simple clinical formula)
-calorie_limit = weight * 30
-
-protein_limit = weight * 0.8
+calorie_limit=weight*30
+protein_limit=weight*0.8
 
 limits={
     1:{"sodium":2300,"potassium":3500,"phosphorus":1000},
@@ -137,8 +137,8 @@ limits={
 
 limits["carbs"]=180
 limits["protein"]=protein_limit
-limits["water"]=daily_water_limit
 limits["calories"]=calorie_limit
+limits["water"]=daily_water_limit
 
 # ==========================================================
 # SESSION STATE
@@ -220,26 +220,19 @@ extra_water=st.number_input("Additional Water Consumed (ml)",0.0)
 daily["water"]+=extra_water
 
 # ==========================================================
-# DAILY VS MEAL LIMITS (INCLUDING CALORIES)
+# DAILY VS LIMITS
 # ==========================================================
 
-st.header("Daily vs Meal Recommendations")
+st.header("Daily Recommendations")
 
 for n in ["sodium","potassium","phosphorus",
           "carbs","protein","calories","water"]:
 
-    daily_limit=limits[n]
-    meal_limit=daily_limit*MEAL_SPLIT[meal_choice]
     consumed=daily[n]
+    limit=limits[n]
+    percent=(consumed/limit)*100 if limit else 0
 
-    daily_pct=(consumed/daily_limit)*100 if daily_limit else 0
-    meal_pct=(consumed/meal_limit)*100 if meal_limit else 0
-
-    st.write(
-        f"{n.capitalize()} → {round(consumed,1)} | "
-        f"Daily Limit: {round(daily_limit,1)} ({round(daily_pct,1)}%) | "
-        f"{meal_choice} Limit: {round(meal_limit,1)} ({round(meal_pct,1)}%)"
-    )
+    st.write(f"{n.capitalize()}: {round(consumed,1)} / {round(limit,1)} ({round(percent,1)}%)")
 
 # ==========================================================
 # RISK ENGINE
@@ -250,30 +243,25 @@ def risk_label(p):
     elif p<=70: return "Moderate","🟡"
     return "High","🔴"
 
-ckd_components={
-    "Sodium":(daily["sodium"]/limits["sodium"])*100,
-    "Potassium":(daily["potassium"]/limits["potassium"])*100,
-    "Phosphorus":(daily["phosphorus"]/limits["phosphorus"])*100
-}
+ckd_score=max(
+    (daily["sodium"]/limits["sodium"])*100,
+    (daily["potassium"]/limits["potassium"])*100,
+    (daily["phosphorus"]/limits["phosphorus"])*100
+)
 
-ckd_score=max(ckd_components.values())
 dm_score=(daily["carbs"]/limits["carbs"])*100
 combined=round((ckd_score*0.6)+(dm_score*0.4),1)
 
 st.header("Risk Dashboard")
 
 l1,i1=risk_label(ckd_score)
-st.subheader(f"CKD Risk: {i1} {l1} ({round(ckd_score,1)}%)")
-for k,v in sorted(ckd_components.items(),
-                  key=lambda x:x[1],reverse=True):
-    st.write(f"{k}: {round(v,1)}% of daily limit")
+st.write(f"CKD Risk: {i1} {l1} ({round(ckd_score,1)}%)")
 
 l2,i2=risk_label(dm_score)
-st.subheader(f"Diabetes Risk: {i2} {l2} ({round(dm_score,1)}%)")
-st.write(f"Carbohydrates: {round(dm_score,1)}% of daily limit")
+st.write(f"Diabetes Risk: {i2} {l2} ({round(dm_score,1)}%)")
 
 l3,i3=risk_label(combined)
-st.subheader(f"Combined Risk: {i3} {l3} ({combined}%)")
+st.write(f"Combined Risk: {i3} {l3} ({combined}%)")
 
 # ==========================================================
 # SAVE LOG
@@ -287,41 +275,49 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 """,(
     patient,today,
     daily["sodium"],daily["potassium"],daily["phosphorus"],
-    daily["carbs"],daily["protein"],daily["water"],
-    daily["calories"],ckd_score,dm_score,combined
+    daily["carbs"],daily["protein"],daily["calories"],
+    daily["water"],ckd_score,dm_score,combined
 ))
 conn.commit()
 
 # ==========================================================
-# WEEKLY & MONTHLY CHARTS
+# WEEKLY & MONTHLY LOGS
 # ==========================================================
 
-st.header("Weekly Trend")
+st.header("Weekly Log")
 week=str(date.today()-timedelta(days=7))
 df_week=pd.read_sql_query(
     "SELECT * FROM logs WHERE patient=? AND log_date>=?",
     conn,params=(patient,week))
 if not df_week.empty:
-    st.line_chart(df_week.set_index("log_date")
-                  [["ckd_risk","dm_risk","combined_risk"]])
+    st.line_chart(df_week.set_index("log_date")[["ckd_risk","dm_risk","combined_risk"]])
 
-st.header("Monthly Trend")
+st.header("Monthly Log")
 month=str(date.today()-timedelta(days=30))
 df_month=pd.read_sql_query(
     "SELECT * FROM logs WHERE patient=? AND log_date>=?",
     conn,params=(patient,month))
 if not df_month.empty:
-    st.line_chart(df_month.set_index("log_date")
-                  [["ckd_risk","dm_risk","combined_risk"]])
+    st.line_chart(df_month.set_index("log_date")[["ckd_risk","dm_risk","combined_risk"]])
 
 # ==========================================================
-# DISCLAIMER
+# FULL DISCLAIMER
 # ==========================================================
 
 st.markdown("---")
 st.markdown("""
-### Medical & Data Disclaimer
-Educational tool only. Not medical advice.
-Consult your healthcare provider before dietary changes.
-Data from USDA FoodData Central.
+### Medical & Clinical Disclaimer
+
+This application is intended strictly for educational and informational purposes only.
+
+It does NOT provide medical advice, diagnosis, or treatment.
+
+All risk scores are simplified estimations based on general dietary guidelines and
+should NOT be used as a substitute for professional medical evaluation.
+
+Always consult your nephrologist, endocrinologist, or registered dietitian before
+making dietary or medical decisions.
+
+Nutritional data provided by USDA FoodData Central.
+This application is not affiliated with, endorsed by, or sponsored by the USDA.
 """)
