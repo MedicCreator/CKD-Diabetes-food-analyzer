@@ -1,5 +1,5 @@
 # ==========================================================
-# RENAL + DIABETES CLINICAL PLATFORM – ADVANCED VERSION
+# RENAL + DIABETES CLINICAL PLATFORM – COMPLETE FINAL BUILD
 # ==========================================================
 
 import streamlit as st
@@ -21,7 +21,7 @@ MEAL_SPLIT = {"Breakfast":0.25,"Lunch":0.30,"Dinner":0.30,"Snacks":0.15}
 # DATABASE
 # ==========================================================
 
-conn = sqlite3.connect("renal_multi_patient.db", check_same_thread=False)
+conn = sqlite3.connect("renal_platform.db", check_same_thread=False)
 c = conn.cursor()
 
 c.execute("""
@@ -52,12 +52,10 @@ def search_food(query):
     try:
         r = requests.get(
             f"{BASE_URL}/foods/search",
-            params={"query": query, "api_key": USDA_API_KEY, "pageSize": 10},
+            params={"query":query,"api_key":USDA_API_KEY,"pageSize":10},
             timeout=20
         )
-        if r.status_code == 200:
-            return r.json().get("foods", [])
-        return []
+        return r.json().get("foods",[]) if r.status_code==200 else []
     except:
         return []
 
@@ -66,31 +64,29 @@ def get_food_details(fdc_id):
     try:
         r = requests.get(
             f"{BASE_URL}/food/{fdc_id}",
-            params={"api_key": USDA_API_KEY},
+            params={"api_key":USDA_API_KEY},
             timeout=20
         )
-        if r.status_code == 200:
-            return r.json()
-        return {}
+        return r.json() if r.status_code==200 else {}
     except:
         return {}
 
 def extract_nutrients(food):
-    nutrients = {"sodium":0,"potassium":0,"phosphorus":0,
-                 "carbs":0,"protein":0,"calories":0,"water":0}
+    nutrients={"sodium":0,"potassium":0,"phosphorus":0,
+               "carbs":0,"protein":0,"calories":0,"water":0}
 
-    for n in food.get("foodNutrients", []):
+    for n in food.get("foodNutrients",[]):
         if "nutrient" in n:
-            number = n["nutrient"].get("number")
-            val = float(n.get("amount") or 0)
+            number=n["nutrient"].get("number")
+            val=float(n.get("amount") or 0)
 
-            if number == "307": nutrients["sodium"]=val
-            elif number == "306": nutrients["potassium"]=val
-            elif number == "305": nutrients["phosphorus"]=val
-            elif number == "205": nutrients["carbs"]=val
-            elif number == "203": nutrients["protein"]=val
-            elif number == "208": nutrients["calories"]=val
-            elif number == "255": nutrients["water"]=val
+            if number=="307": nutrients["sodium"]=val
+            elif number=="306": nutrients["potassium"]=val
+            elif number=="305": nutrients["phosphorus"]=val
+            elif number=="205": nutrients["carbs"]=val
+            elif number=="203": nutrients["protein"]=val
+            elif number=="208": nutrients["calories"]=val
+            elif number=="255": nutrients["water"]=val
 
     return nutrients
 
@@ -109,26 +105,29 @@ def extract_portions(food):
             })
     return portions
 
-def scale(base, grams):
+def scale(base,grams):
     factor=grams/100
     return {k:round(v*factor,2) for k,v in base.items()}
 
 # ==========================================================
-# SIDEBAR – PATIENT PROFILE
+# SIDEBAR PROFILE
 # ==========================================================
 
 st.sidebar.header("Patient Profile")
 
-patient = st.sidebar.text_input("Patient Name","Patient A")
-stage = st.sidebar.selectbox("CKD Stage",[1,2,3,4,5])
-dialysis = st.sidebar.checkbox("On Dialysis")
-weight = st.sidebar.number_input("Body Weight (kg)",70.0)
-hba1c = st.sidebar.number_input("HbA1c (%)",6.5)
-fasting_glucose = st.sidebar.number_input("Fasting Glucose",100)
+patient=st.sidebar.text_input("Patient Name","Patient A")
+stage=st.sidebar.selectbox("CKD Stage",[1,2,3,4,5])
+weight=st.sidebar.number_input("Body Weight (kg)",70.0)
+hba1c=st.sidebar.number_input("HbA1c (%)",6.5)
+fasting_glucose=st.sidebar.number_input("Fasting Glucose",100)
+daily_water_limit=st.sidebar.number_input("Daily Water Limit (ml)",2000.0)
 
-protein_target = weight * (1.2 if dialysis else 0.8)
+# Estimated calorie need (simple clinical formula)
+calorie_limit = weight * 30
 
-limits = {
+protein_limit = weight * 0.8
+
+limits={
     1:{"sodium":2300,"potassium":3500,"phosphorus":1000},
     2:{"sodium":2300,"potassium":3500,"phosphorus":1000},
     3:{"sodium":2000,"potassium":2500,"phosphorus":900},
@@ -136,14 +135,17 @@ limits = {
     5:{"sodium":2000,"potassium":1500,"phosphorus":700},
 }[stage]
 
-limits["carbs"] = 180 - (10 if hba1c>7 else 0)
+limits["carbs"]=180
+limits["protein"]=protein_limit
+limits["water"]=daily_water_limit
+limits["calories"]=calorie_limit
 
 # ==========================================================
 # SESSION STATE
 # ==========================================================
 
 if "meals" not in st.session_state:
-    st.session_state.meals = {m: [] for m in MEALS}
+    st.session_state.meals={m:[] for m in MEALS}
 
 # ==========================================================
 # MEAL BUILDER
@@ -151,30 +153,28 @@ if "meals" not in st.session_state:
 
 st.title("Renal + Diabetes Clinical Platform")
 
-meal_choice = st.selectbox("Meal Section",MEALS)
-query = st.text_input("Search Food")
+meal_choice=st.selectbox("Meal Section",MEALS)
+query=st.text_input("Search Food")
 
 if st.button("Search"):
-    st.session_state.results = search_food(query)
+    st.session_state.results=search_food(query)
 
 if "results" in st.session_state and st.session_state.results:
-    selected = st.selectbox(
-        "Select Food",
-        st.session_state.results,
-        format_func=lambda x:x["description"]
-    )
+    selected=st.selectbox("Select Food",
+                          st.session_state.results,
+                          format_func=lambda x:x["description"])
 
-    food = get_food_details(selected["fdcId"])
-    base = extract_nutrients(food)
-    portions = extract_portions(food)
+    food=get_food_details(selected["fdcId"])
+    base=extract_nutrients(food)
+    portions=extract_portions(food)
 
-    portion = st.selectbox("Select Portion",portions,
-                           format_func=lambda x:x["desc"])
+    portion=st.selectbox("Select Portion",portions,
+                         format_func=lambda x:x["desc"])
 
-    qty = st.number_input("How many portions?",1.0,step=0.5)
+    qty=st.number_input("How many portions?",1.0,step=0.5)
 
     if st.button("Add Food"):
-        grams = portion["grams"] * qty
+        grams=portion["grams"]*qty
         st.session_state.meals[meal_choice].append({
             "id":str(uuid.uuid4()),
             "name":selected["description"],
@@ -187,12 +187,8 @@ if "results" in st.session_state and st.session_state.results:
 # CALCULATE TOTALS
 # ==========================================================
 
-daily = {"sodium":0,"potassium":0,"phosphorus":0,
-         "carbs":0,"protein":0,"calories":0,"water":0}
-
-meal_totals = {m:{"sodium":0,"potassium":0,"phosphorus":0,
-                  "carbs":0,"protein":0,"calories":0,"water":0}
-               for m in MEALS}
+daily={k:0 for k in ["sodium","potassium","phosphorus",
+                     "carbs","protein","calories","water"]}
 
 for meal in MEALS:
     st.subheader(meal)
@@ -201,7 +197,9 @@ for meal in MEALS:
         col1,col2,col3=st.columns([4,2,1])
         with col1: st.write(item["name"])
         with col2:
-            item["grams"]=st.number_input("grams",item["grams"],key=item["id"])
+            item["grams"]=st.number_input("grams",
+                                          item["grams"],
+                                          key=item["id"])
         with col3:
             if st.button("Remove",key="r"+item["id"]):
                 st.session_state.meals[meal]=[
@@ -210,11 +208,38 @@ for meal in MEALS:
                 ]
                 st.rerun()
 
-        scaled = scale(item["base"],item["grams"])
-
+        scaled=scale(item["base"],item["grams"])
         for k in daily:
             daily[k]+=scaled[k]
-            meal_totals[meal][k]+=scaled[k]
+
+# ==========================================================
+# ADDITIONAL WATER
+# ==========================================================
+
+extra_water=st.number_input("Additional Water Consumed (ml)",0.0)
+daily["water"]+=extra_water
+
+# ==========================================================
+# DAILY VS MEAL LIMITS (INCLUDING CALORIES)
+# ==========================================================
+
+st.header("Daily vs Meal Recommendations")
+
+for n in ["sodium","potassium","phosphorus",
+          "carbs","protein","calories","water"]:
+
+    daily_limit=limits[n]
+    meal_limit=daily_limit*MEAL_SPLIT[meal_choice]
+    consumed=daily[n]
+
+    daily_pct=(consumed/daily_limit)*100 if daily_limit else 0
+    meal_pct=(consumed/meal_limit)*100 if meal_limit else 0
+
+    st.write(
+        f"{n.capitalize()} → {round(consumed,1)} | "
+        f"Daily Limit: {round(daily_limit,1)} ({round(daily_pct,1)}%) | "
+        f"{meal_choice} Limit: {round(meal_limit,1)} ({round(meal_pct,1)}%)"
+    )
 
 # ==========================================================
 # RISK ENGINE
@@ -233,37 +258,22 @@ ckd_components={
 
 ckd_score=max(ckd_components.values())
 dm_score=(daily["carbs"]/limits["carbs"])*100
-dm_score*=1.1 if hba1c>7 else 1
 combined=round((ckd_score*0.6)+(dm_score*0.4),1)
 
 st.header("Risk Dashboard")
 
 l1,i1=risk_label(ckd_score)
 st.subheader(f"CKD Risk: {i1} {l1} ({round(ckd_score,1)}%)")
-for k,v in sorted(ckd_components.items(),key=lambda x:x[1],reverse=True):
-    st.write(f"{k}: {round(v,1)}% of limit")
+for k,v in sorted(ckd_components.items(),
+                  key=lambda x:x[1],reverse=True):
+    st.write(f"{k}: {round(v,1)}% of daily limit")
 
 l2,i2=risk_label(dm_score)
 st.subheader(f"Diabetes Risk: {i2} {l2} ({round(dm_score,1)}%)")
-st.write(f"Carbohydrates: {round(dm_score,1)}% of limit")
+st.write(f"Carbohydrates: {round(dm_score,1)}% of daily limit")
 
 l3,i3=risk_label(combined)
 st.subheader(f"Combined Risk: {i3} {l3} ({combined}%)")
-
-# ==========================================================
-# PER-MEAL BREAKDOWN
-# ==========================================================
-
-st.header("Per-Meal Risk Breakdown")
-
-for meal in MEALS:
-    meal_ckd = max(
-        (meal_totals[meal]["sodium"]/limits["sodium"])*100,
-        (meal_totals[meal]["potassium"]/limits["potassium"])*100,
-        (meal_totals[meal]["phosphorus"]/limits["phosphorus"])*100
-    )
-    label,icon=risk_label(meal_ckd)
-    st.write(f"{meal}: {icon} {label} ({round(meal_ckd,1)}%)")
 
 # ==========================================================
 # SAVE LOG
@@ -283,54 +293,26 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 conn.commit()
 
 # ==========================================================
-# WEEKLY & MONTHLY DASHBOARD
+# WEEKLY & MONTHLY CHARTS
 # ==========================================================
 
 st.header("Weekly Trend")
 week=str(date.today()-timedelta(days=7))
 df_week=pd.read_sql_query(
     "SELECT * FROM logs WHERE patient=? AND log_date>=?",
-    conn,params=(patient,week)
-)
+    conn,params=(patient,week))
 if not df_week.empty:
-    st.line_chart(df_week.set_index("log_date")[["ckd_risk","dm_risk","combined_risk"]])
+    st.line_chart(df_week.set_index("log_date")
+                  [["ckd_risk","dm_risk","combined_risk"]])
 
 st.header("Monthly Trend")
 month=str(date.today()-timedelta(days=30))
 df_month=pd.read_sql_query(
     "SELECT * FROM logs WHERE patient=? AND log_date>=?",
-    conn,params=(patient,month)
-)
+    conn,params=(patient,month))
 if not df_month.empty:
-    st.line_chart(df_month.set_index("log_date")[["ckd_risk","dm_risk","combined_risk"]])
-
-# ==========================================================
-# PDF REPORT (HTML DOWNLOAD)
-# ==========================================================
-
-if st.button("Download Patient Summary Report"):
-    report=f"""
-    Renal + Diabetes Clinical Report
-    Patient: {patient}
-    Date: {today}
-
-    Sodium: {daily['sodium']}
-    Potassium: {daily['potassium']}
-    Phosphorus: {daily['phosphorus']}
-    Carbs: {daily['carbs']}
-    Protein: {daily['protein']}
-    Calories: {daily['calories']}
-
-    CKD Risk: {round(ckd_score,1)}%
-    Diabetes Risk: {round(dm_score,1)}%
-    Combined Risk: {combined}%
-    """
-
-    st.download_button(
-        "Download Report",
-        report,
-        file_name="renal_clinical_report.txt"
-    )
+    st.line_chart(df_month.set_index("log_date")
+                  [["ckd_risk","dm_risk","combined_risk"]])
 
 # ==========================================================
 # DISCLAIMER
@@ -340,6 +322,6 @@ st.markdown("---")
 st.markdown("""
 ### Medical & Data Disclaimer
 Educational tool only. Not medical advice.
-Consult your physician before dietary changes.
+Consult your healthcare provider before dietary changes.
 Data from USDA FoodData Central.
 """)
