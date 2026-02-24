@@ -1,5 +1,5 @@
 # ==========================================================
-# RENAL + DIABETES CLINICAL PLATFORM – STABLE FINAL VERSION
+# RENAL + DIABETES CLINICAL PLATFORM – FULL CLINICAL VERSION
 # ==========================================================
 
 import streamlit as st
@@ -18,16 +18,14 @@ MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"]
 MEAL_SPLIT = {"Breakfast":0.25,"Lunch":0.30,"Dinner":0.30,"Snacks":0.15}
 
 # ==========================================================
-# DATABASE INITIALIZATION (SAFE RESET STRUCTURE)
+# DATABASE
 # ==========================================================
 
 conn = sqlite3.connect("renal_platform.db", check_same_thread=False)
 c = conn.cursor()
 
-c.execute("DROP TABLE IF EXISTS logs")
-
 c.execute("""
-CREATE TABLE logs (
+CREATE TABLE IF NOT EXISTS logs (
     patient TEXT,
     log_date TEXT,
     sodium REAL,
@@ -112,7 +110,7 @@ def scale(base,grams):
     return {k:round(v*factor,2) for k,v in base.items()}
 
 # ==========================================================
-# SIDEBAR PROFILE
+# PATIENT PROFILE
 # ==========================================================
 
 st.sidebar.header("Patient Profile")
@@ -124,8 +122,19 @@ hba1c=st.sidebar.number_input("HbA1c (%)",6.5)
 fasting_glucose=st.sidebar.number_input("Fasting Glucose",100)
 daily_water_limit=st.sidebar.number_input("Daily Water Limit (ml)",2000.0)
 
-calorie_limit=weight*30
-protein_limit=weight*0.8
+# Calorie estimate
+calorie_limit = weight * 30
+
+# Protein
+protein_limit = weight * 0.8
+
+# Glycemic control carb adjustment
+if hba1c < 6.5:
+    carb_limit = 200
+elif hba1c <= 7.5:
+    carb_limit = 180
+else:
+    carb_limit = 150
 
 limits={
     1:{"sodium":2300,"potassium":3500,"phosphorus":1000},
@@ -135,7 +144,7 @@ limits={
     5:{"sodium":2000,"potassium":1500,"phosphorus":700},
 }[stage]
 
-limits["carbs"]=180
+limits["carbs"]=carb_limit
 limits["protein"]=protein_limit
 limits["calories"]=calorie_limit
 limits["water"]=daily_water_limit
@@ -190,6 +199,8 @@ if "results" in st.session_state and st.session_state.results:
 daily={k:0 for k in ["sodium","potassium","phosphorus",
                      "carbs","protein","calories","water"]}
 
+meal_totals={m:{k:0 for k in daily} for m in MEALS}
+
 for meal in MEALS:
     st.subheader(meal)
     for item in st.session_state.meals[meal]:
@@ -211,6 +222,7 @@ for meal in MEALS:
         scaled=scale(item["base"],item["grams"])
         for k in daily:
             daily[k]+=scaled[k]
+            meal_totals[meal][k]+=scaled[k]
 
 # ==========================================================
 # ADDITIONAL WATER
@@ -220,22 +232,29 @@ extra_water=st.number_input("Additional Water Consumed (ml)",0.0)
 daily["water"]+=extra_water
 
 # ==========================================================
-# DAILY VS LIMITS
+# DAILY + PER MEAL LIMIT DISPLAY
 # ==========================================================
 
-st.header("Daily Recommendations")
+st.header("Daily & Per-Meal Recommendations")
 
 for n in ["sodium","potassium","phosphorus",
           "carbs","protein","calories","water"]:
 
+    daily_limit=limits[n]
+    meal_limit=daily_limit*MEAL_SPLIT[meal_choice]
     consumed=daily[n]
-    limit=limits[n]
-    percent=(consumed/limit)*100 if limit else 0
 
-    st.write(f"{n.capitalize()}: {round(consumed,1)} / {round(limit,1)} ({round(percent,1)}%)")
+    daily_pct=(consumed/daily_limit)*100 if daily_limit else 0
+    meal_pct=(consumed/meal_limit)*100 if meal_limit else 0
+
+    st.write(
+        f"{n.capitalize()} → {round(consumed,1)} | "
+        f"Daily: {round(daily_limit,1)} ({round(daily_pct,1)}%) | "
+        f"{meal_choice}: {round(meal_limit,1)} ({round(meal_pct,1)}%)"
+    )
 
 # ==========================================================
-# RISK ENGINE
+# RISK ENGINE WITH CONTRIBUTORS
 # ==========================================================
 
 def risk_label(p):
@@ -243,25 +262,35 @@ def risk_label(p):
     elif p<=70: return "Moderate","🟡"
     return "High","🔴"
 
-ckd_score=max(
-    (daily["sodium"]/limits["sodium"])*100,
-    (daily["potassium"]/limits["potassium"])*100,
-    (daily["phosphorus"]/limits["phosphorus"])*100
-)
+ckd_components={
+    "Sodium":(daily["sodium"]/limits["sodium"])*100,
+    "Potassium":(daily["potassium"]/limits["potassium"])*100,
+    "Phosphorus":(daily["phosphorus"]/limits["phosphorus"])*100
+}
+
+ckd_score=max(ckd_components.values())
+ckd_driver=max(ckd_components,key=ckd_components.get)
 
 dm_score=(daily["carbs"]/limits["carbs"])*100
+dm_driver="Carbohydrates"
+
 combined=round((ckd_score*0.6)+(dm_score*0.4),1)
 
 st.header("Risk Dashboard")
 
 l1,i1=risk_label(ckd_score)
-st.write(f"CKD Risk: {i1} {l1} ({round(ckd_score,1)}%)")
+st.subheader(f"CKD Risk: {i1} {l1} ({round(ckd_score,1)}%)")
+st.write("Contributors:")
+for k,v in sorted(ckd_components.items(),key=lambda x:x[1],reverse=True):
+    st.write(f"• {k}: {round(v,1)}% of limit")
 
 l2,i2=risk_label(dm_score)
-st.write(f"Diabetes Risk: {i2} {l2} ({round(dm_score,1)}%)")
+st.subheader(f"Diabetes Risk: {i2} {l2} ({round(dm_score,1)}%)")
+st.write(f"Contributor: {dm_driver}")
 
 l3,i3=risk_label(combined)
-st.write(f"Combined Risk: {i3} {l3} ({combined}%)")
+st.subheader(f"Combined Risk: {i3} {l3} ({combined}%)")
+st.write(f"Primary Driver: {ckd_driver if ckd_score>dm_score else dm_driver}")
 
 # ==========================================================
 # SAVE LOG
@@ -301,7 +330,7 @@ if not df_month.empty:
     st.line_chart(df_month.set_index("log_date")[["ckd_risk","dm_risk","combined_risk"]])
 
 # ==========================================================
-# FULL DISCLAIMER
+# DISCLAIMER
 # ==========================================================
 
 st.markdown("---")
@@ -312,11 +341,9 @@ This application is intended strictly for educational and informational purposes
 
 It does NOT provide medical advice, diagnosis, or treatment.
 
-All risk scores are simplified estimations based on general dietary guidelines and
-should NOT be used as a substitute for professional medical evaluation.
+Risk calculations are simplified estimates based on general dietary recommendations.
 
-Always consult your nephrologist, endocrinologist, or registered dietitian before
-making dietary or medical decisions.
+Always consult your nephrologist, endocrinologist, or registered dietitian before making dietary decisions.
 
 Nutritional data provided by USDA FoodData Central.
 This application is not affiliated with, endorsed by, or sponsored by the USDA.
