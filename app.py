@@ -1,9 +1,6 @@
 import streamlit as st
 import requests
 import uuid
-import sqlite3
-import pandas as pd
-from datetime import date, timedelta
 
 # =====================================================
 # CONFIG
@@ -24,30 +21,7 @@ MEAL_DISTRIBUTION = {
 }
 
 # =====================================================
-# DATABASE SETUP
-# =====================================================
-
-conn = sqlite3.connect("renal_tracker.db", check_same_thread=False)
-c = conn.cursor()
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS daily_log (
-    log_date TEXT PRIMARY KEY,
-    sodium REAL,
-    potassium REAL,
-    phosphorus REAL,
-    carbs REAL,
-    protein REAL,
-    calories REAL,
-    ckd_risk REAL,
-    diabetes_risk REAL,
-    combined_risk REAL
-)
-""")
-conn.commit()
-
-# =====================================================
-# USDA FUNCTIONS
+# USDA API
 # =====================================================
 
 @st.cache_data(ttl=86400)
@@ -97,14 +71,12 @@ def extract_nutrients(food):
 
 def extract_portions(food):
     portions = [{"desc": "100 g", "grams": 100}]
-
     for p in food.get("foodPortions", []):
         if p.get("gramWeight") and p.get("portionDescription"):
             portions.append({
                 "desc": p["portionDescription"],
                 "grams": float(p["gramWeight"])
             })
-
     return portions
 
 def scale(nutrients, grams):
@@ -203,34 +175,54 @@ if "results" in st.session_state and st.session_state.results:
         })
 
 # =====================================================
-# TOTALS
+# TOTAL CALCULATION
 # =====================================================
 
 daily = {"sodium":0,"potassium":0,"phosphorus":0,
          "carbs":0,"protein":0,"calories":0,"water":0}
 
 for meal in MEALS:
-    st.subheader(meal)
     for item in st.session_state.meals[meal]:
-        col1,col2,col3 = st.columns([4,2,1])
-
-        with col1:
-            st.write(item["name"])
-
-        with col2:
-            item["grams"] = st.number_input("grams", item["grams"], key=item["id"])
-
-        with col3:
-            if st.button("Remove", key="r"+item["id"]):
-                st.session_state.meals[meal] = [
-                    i for i in st.session_state.meals[meal]
-                    if i["id"] != item["id"]
-                ]
-                st.rerun()
-
         scaled = scale(item["base"], item["grams"])
         for k in scaled:
             daily[k] += scaled[k]
+
+# =====================================================
+# DISPLAY NUTRIENTS SIDE BY SIDE
+# =====================================================
+
+st.header("Nutrient Summary (Daily vs Meal Limits)")
+
+for n in ["sodium","potassium","phosphorus","carbs","protein"]:
+    if n == "protein":
+        daily_limit = protein_target
+    else:
+        daily_limit = limits[n]
+
+    meal_limit = daily_limit * MEAL_DISTRIBUTION[meal_choice]
+
+    daily_percent = (daily[n]/daily_limit)*100 if daily_limit else 0
+    meal_percent = (daily[n]/meal_limit)*100 if meal_limit else 0
+    exceeded_percent = max(daily_percent-100,0)
+
+    st.write(
+        f"{n.capitalize()} → {round(daily[n],1)} | "
+        f"Daily Limit: {round(daily_limit,1)} ({round(daily_percent,1)}%) | "
+        f"{meal_choice} Limit: {round(meal_limit,1)} ({round(meal_percent,1)}%) | "
+        f"Exceeded: {round(exceeded_percent,1)}%"
+    )
+
+# =====================================================
+# FLUID
+# =====================================================
+
+st.subheader("Fluid Intake")
+
+additional_water = st.number_input("Additional Water Consumed (ml)", 0.0)
+total_fluid = daily["water"] + additional_water
+
+st.write(f"Water from food: {round(daily['water'],1)} ml")
+st.write(f"Total Fluid: {round(total_fluid,1)} ml / {fluid_limit} ml")
 
 # =====================================================
 # RISK CALCULATION
@@ -241,70 +233,38 @@ def risk_label(p):
     elif p <= 70: return "Moderate","🟡"
     return "High","🔴"
 
-ckd_score = max(
-    (daily["sodium"]/limits["sodium"])*100,
-    (daily["potassium"]/limits["potassium"])*100,
-    (daily["phosphorus"]/limits["phosphorus"])*100
-)
+st.header("Risk Analysis")
+
+ckd_factors = {
+    "Sodium": (daily["sodium"]/limits["sodium"])*100,
+    "Potassium": (daily["potassium"]/limits["potassium"])*100,
+    "Phosphorus": (daily["phosphorus"]/limits["phosphorus"])*100
+}
+
+ckd_score = max(ckd_factors.values())
+label_ckd, icon_ckd = risk_label(ckd_score)
+
+st.subheader(f"{icon_ckd} CKD Risk: {label_ckd} ({round(ckd_score,1)}%)")
+for k,v in sorted(ckd_factors.items(), key=lambda x:x[1], reverse=True):
+    st.write(f"{k}: {round(v,1)}%")
+
+st.info(f"Primary CKD Driver: {max(ckd_factors, key=ckd_factors.get)}")
 
 dm_score = (daily["carbs"]/limits["carbs"])*100
+label_dm, icon_dm = risk_label(dm_score)
+
+st.subheader(f"{icon_dm} Diabetes Risk: {label_dm} ({round(dm_score,1)}%)")
+st.write(f"Carbohydrates: {round(dm_score,1)}%")
+
+if hba1c >= 7:
+    st.warning("Elevated HbA1c contributing to risk.")
+if fasting_glucose >= 130:
+    st.warning("Elevated fasting glucose contributing to risk.")
+
 combined = round((ckd_score*0.6)+(dm_score*0.4),1)
+label_combined, icon_combined = risk_label(combined)
 
-# =====================================================
-# SAVE DAILY LOG
-# =====================================================
-
-today = str(date.today())
-
-c.execute("""
-INSERT OR REPLACE INTO daily_log
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-""", (
-    today,
-    daily["sodium"],
-    daily["potassium"],
-    daily["phosphorus"],
-    daily["carbs"],
-    daily["protein"],
-    daily["calories"],
-    ckd_score,
-    dm_score,
-    combined
-))
-conn.commit()
-
-# =====================================================
-# DISPLAY RISKS
-# =====================================================
-
-st.header("Risk Summary")
-
-l1,i1 = risk_label(ckd_score)
-l2,i2 = risk_label(dm_score)
-l3,i3 = risk_label(combined)
-
-st.write(f"CKD: {i1} {l1} ({round(ckd_score,1)}%)")
-st.write(f"Diabetes: {i2} {l2} ({round(dm_score,1)}%)")
-st.write(f"Combined: {i3} {l3} ({combined}%)")
-
-# =====================================================
-# WEEKLY DASHBOARD
-# =====================================================
-
-st.header("Weekly Risk Trend")
-
-week_ago = str(date.today() - timedelta(days=7))
-
-df = pd.read_sql_query(
-    "SELECT * FROM daily_log WHERE log_date >= ?",
-    conn,
-    params=(week_ago,)
-)
-
-if not df.empty:
-    st.line_chart(df.set_index("log_date")[["ckd_risk","diabetes_risk","combined_risk"]])
-else:
-    st.info("No data yet for weekly trend.")
+st.subheader(f"{icon_combined} Combined Risk: {label_combined} ({combined}%)")
 
 # =====================================================
 # DISCLAIMER
