@@ -1,43 +1,33 @@
-# ==============================================
-# RENAL + DIABETES CLINICAL PLATFORM (PRO)
-# ==============================================
+# =====================================================
+# RENAL + DIABETES CLINICAL PLATFORM (FINAL STABLE)
+# =====================================================
 
 import streamlit as st
-import requests
 import sqlite3
 import pandas as pd
-import uuid
-import bcrypt
+import hashlib
 from datetime import date, timedelta
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
 
-# ==============================================
+# =====================================================
 # CONFIG
-# ==============================================
+# =====================================================
 
 st.set_page_config(page_title="Renal + Diabetes Clinical Platform", layout="wide")
 
-USDA_API_KEY = st.secrets["USDA_API_KEY"]
-BASE_URL = "https://api.nal.usda.gov/fdc/v1"
-
-MEALS = ["Breakfast","Lunch","Dinner","Snacks"]
-
-# ==============================================
+# =====================================================
 # DATABASE
-# ==============================================
+# =====================================================
 
-conn = sqlite3.connect("renal_system.db", check_same_thread=False)
+conn = sqlite3.connect("renal_platform.db", check_same_thread=False)
 c = conn.cursor()
 
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
-    password BLOB
+    password TEXT
 )
 """)
 
@@ -59,17 +49,17 @@ CREATE TABLE IF NOT EXISTS logs (
 """)
 conn.commit()
 
-# ==============================================
-# AUTH SYSTEM
-# ==============================================
+# =====================================================
+# AUTH SYSTEM (NO BCRYPT)
+# =====================================================
 
-if "user" not in st.session_state:
-    st.session_state.user = None
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def register(username, password):
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
     try:
-        c.execute("INSERT INTO users VALUES (?,?)", (username, hashed))
+        c.execute("INSERT INTO users VALUES (?,?)",
+                  (username, hash_password(password)))
         conn.commit()
         return True
     except:
@@ -78,14 +68,22 @@ def register(username, password):
 def login(username, password):
     c.execute("SELECT password FROM users WHERE username=?", (username,))
     result = c.fetchone()
-    if result and bcrypt.checkpw(password.encode(), result[0]):
+    if result and result[0] == hash_password(password):
         return True
     return False
 
-if not st.session_state.user:
-    st.title("🔐 Login / Register")
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-    mode = st.radio("Select Mode", ["Login","Register"])
+# =====================================================
+# LOGIN / REGISTER
+# =====================================================
+
+if not st.session_state.user:
+
+    st.title("🔐 Renal + Diabetes Clinical Platform")
+
+    mode = st.radio("Select Mode", ["Login", "Register"])
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
@@ -98,41 +96,41 @@ if not st.session_state.user:
         else:
             if login(username, password):
                 st.session_state.user = username
-                st.success("Logged in successfully.")
+                st.success("Login successful.")
                 st.rerun()
             else:
                 st.error("Invalid credentials.")
+
     st.stop()
 
-# ==============================================
-# PATIENT PROFILE
-# ==============================================
+# =====================================================
+# MAIN APP
+# =====================================================
 
 st.sidebar.title(f"👤 {st.session_state.user}")
 
+# Patient Profile
 stage = st.sidebar.selectbox("CKD Stage", [1,2,3,4,5])
 weight = st.sidebar.number_input("Body Weight (kg)", 70.0)
 hba1c = st.sidebar.number_input("HbA1c (%)", 6.5)
+fasting_glucose = st.sidebar.number_input("Fasting Glucose", 100)
 fluid_limit = st.sidebar.number_input("Daily Fluid Limit (ml)", 2000.0)
 
 protein_target = weight * 0.8
 
-# ==============================================
-# DAILY DATA ENTRY (Simplified)
-# ==============================================
-
-st.title("Renal + Diabetes Clinical Dashboard")
+# Nutrient Inputs
+st.title("Renal + Diabetes Daily Entry")
 
 sodium = st.number_input("Total Sodium (mg)", 0.0)
 potassium = st.number_input("Total Potassium (mg)", 0.0)
 phosphorus = st.number_input("Total Phosphorus (mg)", 0.0)
-carbs = st.number_input("Total Carbs (g)", 0.0)
+carbs = st.number_input("Total Carbohydrates (g)", 0.0)
 protein = st.number_input("Total Protein (g)", 0.0)
 water = st.number_input("Total Water Intake (ml)", 0.0)
 
-# ==============================================
+# =====================================================
 # LIMITS
-# ==============================================
+# =====================================================
 
 limits = {
     1: {"sodium":2300,"potassium":3500,"phosphorus":1000},
@@ -144,27 +142,31 @@ limits = {
 
 limits["carbs"] = 180
 
-# ==============================================
+# =====================================================
 # RISK CALCULATION
-# ==============================================
+# =====================================================
 
 def risk_label(p):
-    if p <= 40: return "Low","🟢"
-    elif p <= 70: return "Moderate","🟡"
-    return "High","🔴"
+    if p <= 40:
+        return "Low", "🟢"
+    elif p <= 70:
+        return "Moderate", "🟡"
+    else:
+        return "High", "🔴"
 
-ckd_score = max(
-    sodium/limits["sodium"]*100 if limits["sodium"] else 0,
-    potassium/limits["potassium"]*100 if limits["potassium"] else 0,
-    phosphorus/limits["phosphorus"]*100 if limits["phosphorus"] else 0
-)
+ckd_factors = {
+    "Sodium": (sodium/limits["sodium"])*100 if limits["sodium"] else 0,
+    "Potassium": (potassium/limits["potassium"])*100 if limits["potassium"] else 0,
+    "Phosphorus": (phosphorus/limits["phosphorus"])*100 if limits["phosphorus"] else 0
+}
 
-dm_score = carbs/limits["carbs"]*100 if limits["carbs"] else 0
-combined = round((ckd_score*0.6)+(dm_score*0.4),1)
+ckd_score = max(ckd_factors.values())
+dm_score = (carbs/limits["carbs"])*100 if limits["carbs"] else 0
+combined_score = round((ckd_score*0.6)+(dm_score*0.4),1)
 
-# ==============================================
-# SAVE LOG
-# ==============================================
+# =====================================================
+# SAVE DAILY LOG
+# =====================================================
 
 today = str(date.today())
 
@@ -174,85 +176,111 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)
 """, (
     st.session_state.user,
     today,
-    sodium,potassium,phosphorus,
-    carbs,protein,water,
-    ckd_score,dm_score,combined
+    sodium,
+    potassium,
+    phosphorus,
+    carbs,
+    protein,
+    water,
+    ckd_score,
+    dm_score,
+    combined_score
 ))
 conn.commit()
 
-# ==============================================
+# =====================================================
 # DISPLAY RISKS
-# ==============================================
+# =====================================================
 
-st.header("Risk Summary")
+st.header("Risk Analysis")
 
-for label,value in [
-    ("CKD Risk",ckd_score),
-    ("Diabetes Risk",dm_score),
-    ("Combined Risk",combined)
-]:
-    l,i = risk_label(value)
-    st.write(f"{label}: {i} {l} ({round(value,1)}%)")
+label_ckd, icon_ckd = risk_label(ckd_score)
+label_dm, icon_dm = risk_label(dm_score)
+label_comb, icon_comb = risk_label(combined_score)
 
-# ==============================================
+st.write(f"CKD Risk: {icon_ckd} {label_ckd} ({round(ckd_score,1)}%)")
+for k,v in ckd_factors.items():
+    st.write(f"   • {k}: {round(v,1)}% of daily limit")
+
+st.write(f"Diabetes Risk: {icon_dm} {label_dm} ({round(dm_score,1)}%)")
+st.write(f"   • Carbs: {round(dm_score,1)}% of daily limit")
+
+st.write(f"Combined Risk: {icon_comb} {label_comb} ({combined_score}%)")
+
+# =====================================================
+# PROTEIN & FLUID
+# =====================================================
+
+st.header("Protein & Fluid Summary")
+
+st.write(f"Protein Target: {round(protein_target,1)} g")
+st.write(f"Protein Consumed: {protein} g ({round((protein/protein_target)*100 if protein_target else 0,1)}%)")
+
+st.write(f"Total Fluid: {water} ml / {fluid_limit} ml")
+
+# =====================================================
 # WEEKLY DASHBOARD
-# ==============================================
+# =====================================================
 
 st.header("📊 Weekly Dashboard")
 
-week = str(date.today()-timedelta(days=7))
+week_ago = str(date.today() - timedelta(days=7))
 
-df = pd.read_sql_query(
+df_week = pd.read_sql_query(
     "SELECT * FROM logs WHERE username=? AND log_date>=?",
     conn,
-    params=(st.session_state.user, week)
+    params=(st.session_state.user, week_ago)
 )
 
-if not df.empty:
-    st.line_chart(df.set_index("log_date")[["ckd_risk","diabetes_risk","combined_risk"]])
+if not df_week.empty:
+    st.line_chart(df_week.set_index("log_date")[["ckd_risk","diabetes_risk","combined_risk"]])
+else:
+    st.info("No weekly data yet.")
 
-# ==============================================
+# =====================================================
 # MONTHLY DASHBOARD
-# ==============================================
+# =====================================================
 
 st.header("📅 Monthly Dashboard")
 
-month = str(date.today()-timedelta(days=30))
+month_ago = str(date.today() - timedelta(days=30))
 
 df_month = pd.read_sql_query(
     "SELECT * FROM logs WHERE username=? AND log_date>=?",
     conn,
-    params=(st.session_state.user, month)
+    params=(st.session_state.user, month_ago)
 )
 
 if not df_month.empty:
     st.line_chart(df_month.set_index("log_date")[["ckd_risk","diabetes_risk","combined_risk"]])
+else:
+    st.info("No monthly data yet.")
 
-# ==============================================
+# =====================================================
 # PDF EXPORT
-# ==============================================
+# =====================================================
 
 def generate_pdf():
-    filename = f"{st.session_state.user}_report.pdf"
+    filename = f"{st.session_state.user}_clinical_report.pdf"
     doc = SimpleDocTemplate(filename)
     elements = []
     styles = getSampleStyleSheet()
 
     elements.append(Paragraph("Renal + Diabetes Clinical Report", styles["Title"]))
     elements.append(Spacer(1, 0.3 * inch))
-
     elements.append(Paragraph(f"Date: {today}", styles["Normal"]))
     elements.append(Paragraph(f"CKD Risk: {round(ckd_score,1)}%", styles["Normal"]))
     elements.append(Paragraph(f"Diabetes Risk: {round(dm_score,1)}%", styles["Normal"]))
-    elements.append(Paragraph(f"Combined Risk: {round(combined,1)}%", styles["Normal"]))
+    elements.append(Paragraph(f"Combined Risk: {round(combined_score,1)}%", styles["Normal"]))
     elements.append(Spacer(1, 0.3 * inch))
 
     elements.append(Paragraph("Nutrient Totals:", styles["Heading2"]))
-    elements.append(Paragraph(f"Sodium: {sodium}", styles["Normal"]))
-    elements.append(Paragraph(f"Potassium: {potassium}", styles["Normal"]))
-    elements.append(Paragraph(f"Phosphorus: {phosphorus}", styles["Normal"]))
-    elements.append(Paragraph(f"Carbs: {carbs}", styles["Normal"]))
-    elements.append(Paragraph(f"Protein: {protein}", styles["Normal"]))
+    elements.append(Paragraph(f"Sodium: {sodium} mg", styles["Normal"]))
+    elements.append(Paragraph(f"Potassium: {potassium} mg", styles["Normal"]))
+    elements.append(Paragraph(f"Phosphorus: {phosphorus} mg", styles["Normal"]))
+    elements.append(Paragraph(f"Carbs: {carbs} g", styles["Normal"]))
+    elements.append(Paragraph(f"Protein: {protein} g", styles["Normal"]))
+    elements.append(Paragraph(f"Water: {water} ml", styles["Normal"]))
 
     doc.build(elements)
     return filename
@@ -262,24 +290,25 @@ if st.button("📄 Export PDF Report"):
     with open(pdf_file, "rb") as f:
         st.download_button("Download Report", f, file_name=pdf_file)
 
-# ==============================================
+# =====================================================
 # LOGOUT
-# ==============================================
+# =====================================================
 
 if st.sidebar.button("Logout"):
     st.session_state.user = None
     st.rerun()
 
-# ==============================================
+# =====================================================
 # DISCLAIMER
-# ==============================================
+# =====================================================
 
 st.markdown("---")
 st.markdown("""
 ### Medical & Data Disclaimer
-Educational tool only. Not medical advice.
-Consult your physician before making clinical decisions.
+This application is for educational purposes only.
+It does not provide medical advice, diagnosis, or treatment.
 
-Nutritional data reference: USDA FoodData Central.
-Not affiliated with USDA.
+Always consult your physician before making clinical decisions.
+
+Not affiliated with or endorsed by USDA.
 """)
