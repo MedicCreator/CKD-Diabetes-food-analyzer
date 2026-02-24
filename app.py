@@ -13,7 +13,14 @@ st.set_page_config(page_title="Renal + Diabetes Clinical Planner", layout="wide"
 
 USDA_API_KEY = st.secrets["USDA_API_KEY"]
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
+
 MEAL_TYPES = ["Breakfast","Lunch","Dinner","Snacks"]
+MEAL_DISTRIBUTION = {
+    "Breakfast":0.25,
+    "Lunch":0.30,
+    "Dinner":0.30,
+    "Snacks":0.15
+}
 
 # ======================================================
 # DATABASE
@@ -49,9 +56,8 @@ def get_food_details(fdc_id):
         return {}
 
 def extract_nutrients(food):
-    nutrients = {"sodium":0,"potassium":0,"phosphorus":0,
-                 "carbs":0,"protein":0,"calories":0,
-                 "sugar":0,"water":0}
+    nutrients={"sodium":0,"potassium":0,"phosphorus":0,
+               "carbs":0,"protein":0,"calories":0,"water":0}
     for n in food.get("foodNutrients",[]):
         if "nutrient" in n:
             num=n["nutrient"].get("number")
@@ -62,7 +68,6 @@ def extract_nutrients(food):
             elif num=="205": nutrients["carbs"]=val
             elif num=="203": nutrients["protein"]=val
             elif num=="208": nutrients["calories"]=val
-            elif num=="269": nutrients["sugar"]=val
             elif num=="255": nutrients["water"]=val
     return nutrients
 
@@ -86,7 +91,7 @@ def scale(nutrients,grams):
     return {k:round(v*factor,2) for k,v in nutrients.items()}
 
 # ======================================================
-# SIDEBAR
+# SIDEBAR (CLINICAL INPUTS)
 # ======================================================
 
 st.sidebar.header("Patient Profile")
@@ -104,6 +109,34 @@ fluid_limit=st.sidebar.number_input("Daily Fluid Limit (ml)",
                                      1500 if dialysis else 2000)
 
 protein_target=weight*(1.2 if dialysis else 0.8)
+
+# ======================================================
+# CKD LIMITS BY STAGE
+# ======================================================
+
+def get_ckd_limits(stage,dialysis):
+    if dialysis:
+        return {"sodium":2000,"potassium":3000,"phosphorus":1000}
+    if stage<=2:
+        return {"sodium":2300,"potassium":3500,"phosphorus":1000}
+    if stage==3:
+        return {"sodium":2000,"potassium":2500,"phosphorus":900}
+    if stage==4:
+        return {"sodium":2000,"potassium":2000,"phosphorus":800}
+    return {"sodium":2000,"potassium":1500,"phosphorus":700}
+
+limits=get_ckd_limits(stage,dialysis)
+
+# Lab tightening
+if serum_k>=6: limits["potassium"]=1500
+if serum_phos>=6: limits["phosphorus"]=700
+
+# Diabetes carb limit
+if hba1c<6.5: carb_limit=200
+elif hba1c<=7.5: carb_limit=180
+else: carb_limit=150
+
+limits["carbs"]=carb_limit
 
 # ======================================================
 # SESSION STATE
@@ -146,137 +179,66 @@ if "results" in st.session_state and st.session_state.results:
         })
 
 # ======================================================
-# DISPLAY & CALCULATE
+# CALCULATE TOTALS
 # ======================================================
 
 daily={"sodium":0,"potassium":0,"phosphorus":0,
-       "carbs":0,"protein":0,"calories":0,"sugar":0,"water":0}
+       "carbs":0,"protein":0,"calories":0,"water":0}
 
 for meal in MEAL_TYPES:
     st.subheader(meal)
     for item in st.session_state.meals[meal]:
-        col1,col2,col3=st.columns([4,2,1])
-        with col1: st.write(item["name"])
-        with col2:
-            new_g=st.number_input("grams",
-                                  value=item["grams"],
-                                  key=item["id"])
-            item["grams"]=new_g
-        with col3:
-            if st.button("Remove",key="r"+item["id"]):
-                st.session_state.meals[meal]=[
-                    i for i in st.session_state.meals[meal]
-                    if i["id"]!=item["id"]]
-                st.rerun()
-
+        st.write(item["name"])
         scaled=scale(item["base"],item["grams"])
         for k in scaled:
             daily[k]+=scaled[k]
 
 # ======================================================
-# TOTALS
+# SIDE-BY-SIDE DISPLAY
 # ======================================================
 
-st.header("Daily Totals")
+st.header("Per-Meal Nutrient Comparison")
 
-for k in ["sodium","potassium","phosphorus",
-          "carbs","protein","calories"]:
-    st.write(f"{k.capitalize()}: {round(daily[k],1)}")
+meal_percent=MEAL_DISTRIBUTION[meal_choice]
 
-manual_fluid=st.number_input("Additional Fluid Intake (ml)",0.0)
-food_water=daily["water"] if daily["water"]>0 else daily["calories"]*0
-total_fluid=food_water+manual_fluid
+for n in ["sodium","potassium","phosphorus","carbs"]:
+    daily_limit=limits[n]
+    meal_allowance=daily_limit*meal_percent
+    value=daily[n]
+    percent=(value/meal_allowance)*100 if meal_allowance else 0
 
-st.write(f"Total Fluid: {round(total_fluid,1)} ml (Limit {fluid_limit})")
+    color="🟢" if percent<=40 else "🟡" if percent<=70 else "🔴"
 
-# ======================================================
-# LIMITS
-# ======================================================
-
-limits={
-    "sodium":2000 if stage>=4 else 2300,
-    "potassium":1500 if serum_k>=6 else 1800,
-    "phosphorus":700 if serum_phos>=6 else 800,
-    "carbs":180
-}
-
-def risk_label(p):
-    if p<=40: return "Low","🟢"
-    elif p<=70: return "Moderate","🟡"
-    return "High","🔴"
+    st.write(
+        f"{n.capitalize()}: {round(value,1)} mg | "
+        f"Meal Allowance: {round(meal_allowance,1)} mg | "
+        f"{round(percent,1)}% {color}"
+    )
 
 # ======================================================
-# CKD RISK
+# RISK SUMMARY
 # ======================================================
 
-st.subheader("CKD Risk Analysis")
-
-ckd_components={}
-for n in ["sodium","potassium","phosphorus"]:
-    percent=daily[n]/limits[n]*100
-    ckd_components[n]=percent
-
-ckd=max(ckd_components.values())
-label_ckd,color_ckd=risk_label(ckd)
-
-st.markdown(f"### {color_ckd} CKD Risk: {label_ckd} ({round(ckd,1)}%)")
-
-for n,p in sorted(ckd_components.items(),
-                  key=lambda x:x[1],reverse=True):
-    st.write(f"{n.capitalize()}: {round(p,1)}% of limit")
-
-# ======================================================
-# DIABETES RISK
-# ======================================================
-
-st.subheader("Diabetes Risk Analysis")
+ckd=max(daily["sodium"]/limits["sodium"]*100,
+        daily["potassium"]/limits["potassium"]*100,
+        daily["phosphorus"]/limits["phosphorus"]*100)
 
 dm=daily["carbs"]/limits["carbs"]*100
-label_dm,color_dm=risk_label(dm)
-
-st.markdown(f"### {color_dm} Diabetes Risk: {label_dm} ({round(dm,1)}%)")
-st.write(f"Carbohydrates: {round(dm,1)}% of limit")
-
-if hba1c>=7: st.warning("Elevated HbA1c increases risk")
-if fasting_glucose>=130: st.warning("Elevated fasting glucose increases risk")
-
-# ======================================================
-# COMBINED
-# ======================================================
-
 combined=round((ckd*0.6)+(dm*0.4),1)
-label_c,color_c=risk_label(combined)
 
-st.subheader("Combined Risk")
-st.markdown(f"### {color_c} {label_c} ({combined}%)")
+def label(p):
+    if p<=40:return "Low","🟢"
+    elif p<=70:return "Moderate","🟡"
+    return "High","🔴"
 
-# ======================================================
-# PROTEIN
-# ======================================================
+l1,c1=label(ckd)
+l2,c2=label(dm)
+l3,c3=label(combined)
 
-st.subheader("Protein Target")
-st.write("Target:",round(protein_target,1),"g")
-
-if daily["protein"]<protein_target*0.8:
-    st.warning("Protein too low")
-elif daily["protein"]>protein_target*1.3:
-    st.warning("Protein too high")
-else:
-    st.success("Protein adequate")
-
-# ======================================================
-# SAVE & WEEKLY
-# ======================================================
-
-if st.button("Save Today"):
-    c.execute("INSERT INTO daily_log VALUES (?,?,?,?)",
-              (str(date.today()),ckd,dm,combined))
-    conn.commit()
-    st.success("Saved")
-
-df=pd.read_sql("SELECT * FROM daily_log ORDER BY log_date DESC LIMIT 7",conn)
-st.subheader("Weekly Trend")
-st.dataframe(df)
+st.subheader("Risk Summary")
+st.markdown(f"CKD Risk: {c1} {l1} ({round(ckd,1)}%)")
+st.markdown(f"Diabetes Risk: {c2} {l2} ({round(dm,1)}%)")
+st.markdown(f"Combined Risk: {c3} {l3} ({combined}%)")
 
 # ======================================================
 # DISCLAIMER
